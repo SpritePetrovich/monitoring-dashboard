@@ -1,0 +1,38 @@
+name: Run Parser and Deploy
+
+on:
+  schedule:
+    # Запуск каждый час в 5 минут. Важно: время указано в UTC!
+    # 5 * * * * = 5 минут после каждого часа (UTC)
+    - cron: '5 * * * *'
+  workflow_dispatch: # Позволяет запускать вручную кнопкой для теста
+
+permissions:
+  contents: write # Чтобы можно было коммитить изменения (например, логи)
+  pages: write
+  id-token: write
+
+jobs:
+  run-parser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Run parser script
+        env:
+          # Секреты подтягиваются из настроек репозитория
+          YANDEX_TOKEN: ${{ secrets.YANDEX_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Токен для пуша в репо
+          ZK_PASSWORD: ${{ secrets.ZK_PASSWORD }}
+        run: python parser_dashboard.py
