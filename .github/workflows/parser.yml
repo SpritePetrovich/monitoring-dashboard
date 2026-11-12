@@ -2,27 +2,28 @@ name: Run Parser and Deploy
 
 on:
   schedule:
-    # Запуск каждый час в 5 минут. Важно: время указано в UTC!
-    # 5 * * * * = 5 минут после каждого часа (UTC)
+    # Каждый час в 5 минут (UTC).
+    # UTC = МСК - 3, то есть в Москве это будет :05 каждого часа.
     - cron: '5 * * * *'
-  workflow_dispatch: # Позволяет запускать вручную кнопкой для теста
+  workflow_dispatch:  # позволяет запускать вручную кнопкой в Actions
 
 permissions:
-  contents: write # Чтобы можно было коммитить изменения (например, логи)
-  pages: write
-  id-token: write
+  contents: write     # нужно, чтобы GITHUB_TOKEN мог пушить index.html в тот же репозиторий
 
 jobs:
   run-parser:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -31,8 +32,17 @@ jobs:
 
       - name: Run parser script
         env:
-          # Секреты подтягиваются из настроек репозитория
-          YANDEX_TOKEN: ${{ secrets.YANDEX_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Токен для пуша в репо
+          # Секреты из Settings → Secrets and variables → Actions
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZK_PASSWORD: ${{ secrets.ZK_PASSWORD }}
+
+          # Публичные параметры (можно менять прямо здесь)
+          ZK_LOGIN: 'ka'
+          GITHUB_USERNAME: 'SpritePetrovich'
+          GITHUB_REPO: 'monitoring-dashboard'
+          GITHUB_BRANCH: 'main'
+
+          # С какой даты показывать готовые заявки.
+          # Форматы: "01.11.2026" | "11.2026" | "2026"
+          RECENTLY_SINCE: '11.2026'
         run: python parser_dashboard.py
