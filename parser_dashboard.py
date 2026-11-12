@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- WINDOWS: кодировка консоли ----------
 if sys.platform == "win32":
@@ -21,14 +22,48 @@ PASSWORD   = os.getenv("ZK_PASSWORD", "")
 BASE_URL   = "https://www.zayavka-karty.ru"
 TARGET_URL = BASE_URL + "/ka"
 
-SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR  = SCRIPT_DIR
-OUTPUT_CSV  = os.path.join(OUTPUT_DIR, "output.csv")
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR   = SCRIPT_DIR
+OUTPUT_CSV   = os.path.join(OUTPUT_DIR, "output.csv")
 RECENTLY_CSV = os.path.join(OUTPUT_DIR, "recently_done.csv")
-OUTPUT_HTML = os.path.join(OUTPUT_DIR, "dashboard.html")
-DEBUG_HTML  = os.path.join(OUTPUT_DIR, "_debug_page.html")
+OUTPUT_HTML  = os.path.join(OUTPUT_DIR, "dashboard.html")
+DEBUG_HTML   = os.path.join(OUTPUT_DIR, "_debug_page.html")
 
 PRIORITY_REASON = "Новый ЦФЗ"
+
+
+# ---------- ФИЛЬТР «НЕДАВНО ГОТОВО» ----------
+def _parse_since(value: str) -> datetime:
+    """
+    Формат: "DD.MM.YYYY" или "MM.YYYY" или "YYYY".
+    Примеры:
+      "01.11.2025" -> 1 ноября 2025
+      "11.2025"    -> 1 ноября 2025
+      "2025"       -> 1 января 2025
+    """
+    v = value.strip()
+    parts = v.split(".")
+    try:
+        if len(parts) == 3:
+            return datetime(int(parts[2]), int(parts[1]), int(parts[0]))
+        if len(parts) == 2:
+            return datetime(int(parts[1]), int(parts[0]), 1)
+        if len(parts) == 1 and len(parts[0]) == 4:
+            return datetime(int(parts[0]), 1, 1)
+    except ValueError:
+        pass
+    raise ValueError(f"Некорректный RECENTLY_SINCE: {value!r}")
+
+
+# По умолчанию — с 1 ноября текущего года. Можно переопределить через env.
+RECENTLY_SINCE = _parse_since(
+    os.getenv("RECENTLY_SINCE", f"11.{datetime.now().year}")
+)
+
+# ---------- НАСТРОЙКИ ПРОВЕРКИ ССЫЛОК ----------
+LINK_CHECK_TIMEOUT = int(os.getenv("LINK_CHECK_TIMEOUT", "10"))
+LINK_CHECK_WORKERS = int(os.getenv("LINK_CHECK_WORKERS", "8"))
+LINK_CHECK_ENABLED = os.getenv("LINK_CHECK_ENABLED", "true").lower() == "true"
 
 # ---------- НАСТРОЙКИ GITHUB ----------
 GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN", "")
@@ -36,6 +71,9 @@ GITHUB_USERNAME  = os.getenv("GITHUB_USERNAME", "SpritePetrovich")
 GITHUB_REPO      = os.getenv("GITHUB_REPO", "monitoring-dashboard")
 GITHUB_FILE_PATH = "index.html"
 GITHUB_BRANCH    = os.getenv("GITHUB_BRANCH", "main")
+
+UA_STRING = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
 
 # =========================================================
@@ -46,7 +84,6 @@ def gh_log(msg):
 
 
 def github_upload_dashboard(local_html_path):
-    """Загружает локальный HTML-файл в репозиторий GitHub как index.html."""
     print("\n=== Выгрузка на GitHub Pages ===")
 
     if not GITHUB_TOKEN:
@@ -127,6 +164,100 @@ def github_upload_dashboard(local_html_path):
 
 
 # =========================================================
+# ================== ПРОВЕРКА ССЫЛОК ======================
+# =========================================================
+def check_link(url: str, timeout: int = LINK_CHECK_TIMEOUT):
+    """
+    Возвращает (ok: bool, reason: str):
+      ok=True  -> ссылка живая
+      ok=False -> ссылка битая (404/410/страница-ошибка) или не проверена
+    """
+    if not url:
+        return False, "нет ссылки"
+
+    # Отсекаем заведомо мусорные URL
+    if not url.startswith(("http://", "https://")):
+        return False, "некорректный URL"
+
+    try:
+        r = requests.get(
+            url, timeout=timeout, stream=True, allow_redirects=True,
+            headers={"User-Agent": UA_STRING},
+        )
+    except requests.exceptions.Timeout:
+        return False, "таймаут"
+    except requests.exceptions.SSLError:
+        return False, "SSL-ошибка"
+    except requests.exceptions.ConnectionError:
+        return False, "сеть"
+    except Exception as e:
+        return False, f"{type(e).__name__}"
+
+    try:
+        if r.status_code in (404, 410):
+            return False, f"HTTP {r.status_code}"
+        if r.status_code >= 500:
+            return False, f"HTTP {r.status_code} (сервер)"
+        if r.status_code != 200:
+            return False, f"HTTP {r.status_code}"
+
+        ct = (r.headers.get("Content-Type") or "").lower()
+
+        # Яндекс.Диск может отдать 200 с HTML-страницей "файл не найден"
+        if "text/html" in ct:
+            try:
+                body = r.raw.read(8192, decode_content=True)
+                text = body.decode("utf-8", errors="ignore").lower()
+            except Exception:
+                text = ""
+
+            error_markers = [
+                "файл не найден",
+                "не найден",
+                "not found",
+                "404",
+                "удалён",
+                "удален",
+                "file is missing",
+                "no longer available",
+            ]
+            for m in error_markers:
+                if m in text:
+                    return False, "страница «файл не найден»"
+
+        return True, "ok"
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
+
+
+def check_links_parallel(urls: list) -> dict:
+    """
+    Проверяет все URL параллельно.
+    Возвращает {url: (ok: bool, reason: str)}.
+    """
+    result = {}
+    if not urls:
+        return result
+
+    print(f"\n=== Проверка {len(urls)} ссылок (потоков: {LINK_CHECK_WORKERS}) ===")
+    with ThreadPoolExecutor(max_workers=LINK_CHECK_WORKERS) as ex:
+        futures = {ex.submit(check_link, u): u for u in urls}
+        for i, f in enumerate(as_completed(futures), 1):
+            url = futures[f]
+            try:
+                ok, reason = f.result()
+            except Exception as e:
+                ok, reason = False, f"исключение: {type(e).__name__}"
+            result[url] = (ok, reason)
+            icon = "✅" if ok else "❌"
+            print(f"   [{i}/{len(urls)}] {icon} {reason:<28} {url[:80]}")
+    return result
+
+
+# =========================================================
 # ================== АВТОРИЗАЦИЯ ==========================
 # =========================================================
 def login(session):
@@ -184,14 +315,14 @@ def login(session):
 # ==================== ПАРСИНГ ============================
 # =========================================================
 def _parse_active_table(table, headers):
-    """Активные заявки: №, Город, SAM, статус, причина."""
+    """Активные: (num, city, sam, status, reason)."""
     def idx(*names):
         for n in names:
             if n in headers:
                 return headers.index(n)
         return None
 
-    i_num    = idx("#") or 0
+    i_num    = idx("#")
     i_city   = idx("Город")
     i_sam    = idx("Название SAM")
     i_status = idx("Карта")
@@ -199,6 +330,9 @@ def _parse_active_table(table, headers):
 
     if i_city is None or i_sam is None:
         return []
+
+    if i_num is None:
+        i_num = 0
 
     tbody = table.find("tbody")
     if not tbody:
@@ -224,7 +358,7 @@ def _parse_active_table(table, headers):
 
 
 def _parse_recently_done_table(table, headers):
-    """Недавно готово: №, дата готовности, SAM, ссылка на файл."""
+    """Недавно готово: (num, date_str, sam, link)."""
     def idx(name):
         return headers.index(name) if name in headers else None
 
@@ -261,8 +395,7 @@ def _parse_recently_done_table(table, headers):
 
 
 def parse_soup(soup):
-    """Возвращает (active_rows, recently_done_rows)."""
-    active, recently_done = [], []
+    active, recently = [], []
 
     tables = soup.find_all("table")
     print(f"   таблиц: {len(tables)}")
@@ -279,13 +412,12 @@ def parse_soup(soup):
             active = _parse_active_table(table, ths)
         elif "Готово" in ths and "SAM" in ths and "Ссылка" in ths:
             print(f"   ✅ таблица «Недавно готово»: #{i}")
-            recently_done = _parse_recently_done_table(table, ths)
+            recently = _parse_recently_done_table(table, ths)
 
-    return active, recently_done
+    return active, recently
 
 
 def fetch_and_parse(session, url):
-    """Загружает страницу, при необходимости логинится, парсит обе таблицы."""
     print(f"\n=== Парсинг {url} ===")
     try:
         resp = session.get(url)
@@ -299,7 +431,6 @@ def fetch_and_parse(session, url):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(DEBUG_HTML, "w", encoding="utf-8") as f:
         f.write(resp.text)
-    print(f"   HTML: {DEBUG_HTML}")
 
     soup = BeautifulSoup(resp.text, "html.parser")
     active, recently = parse_soup(soup)
@@ -317,6 +448,33 @@ def fetch_and_parse(session, url):
 
 
 # =========================================================
+# ==================== ДАТА ===============================
+# =========================================================
+def parse_date_dmy(s):
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s.strip(), "%d.%m.%Y")
+    except (ValueError, AttributeError):
+        return None
+
+
+def filter_recently_by_date(rows, since: datetime):
+    """Оставляет записи, у которых дата >= since."""
+    kept, dropped = [], 0
+    for num, date_str, sam, link in rows:
+        d = parse_date_dmy(date_str)
+        if d is None:
+            dropped += 1
+            continue
+        if d >= since:
+            kept.append((num, date_str, sam, link, d))
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+# =========================================================
 # ==================== CSV ================================
 # =========================================================
 def save_active_csv(data, path):
@@ -328,12 +486,16 @@ def save_active_csv(data, path):
     print(f"💾 CSV (активные): {path}")
 
 
-def save_recently_csv(data, path):
+def save_recently_csv(rows, path):
+    """rows: [(num, date, sam, link, link_ok, link_reason), ...]"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;date_done;sam;link\n")
-        for num, date, sam, link in data:
-            f.write(f"{num};{date};{sam};{link}\n")
+        f.write("num;date_done;sam;link;link_ok;link_status\n")
+        for num, date, sam, link, link_ok, link_reason in rows:
+            ok_str = "ok" if link_ok else "broken"
+            # разделитель ";" не встречается в URL, но на всякий случай экранируем
+            link_esc = link.replace(";", "%3B")
+            f.write(f"{num};{date};{sam};{link_esc};{ok_str};{link_reason}\n")
     print(f"💾 CSV (недавно готово): {path}")
 
 
@@ -357,6 +519,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
   }
+  .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -365,12 +528,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
   .stat .value { font-size: 32px; font-weight: 700; }
   .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
-  .stat.done    .value { color: #16a34a; }
-  .stat.pending .value { color: #dc2626; }
+  .stat.done     .value { color: #16a34a; }
+  .stat.pending  .value { color: #dc2626; }
   .stat.priority { background: #fef3c7; border: 1px solid #fcd34d; }
   .stat.priority .value { color: #b45309; }
   .stat.priority .label { color: #92400e; font-weight: 600; }
   .stat.recently .value { color: #2563eb; }
+  .stat.broken   .value { color: #dc2626; }
 
   .progress-wrap { background: #fff; border-radius: 12px; padding: 16px 20px;
                    margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -408,9 +572,24 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
   a.file-link:hover { text-decoration: underline; }
+  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
+  a.file-link.broken:hover { text-decoration: line-through underline; }
 
-  .recently-wrap { max-height: 600px; overflow-y: auto; border-radius: 12px; }
+  .link-status { display: inline-flex; align-items: center; gap: 6px;
+                 font-size: 12px; font-weight: 600; }
+  .link-status.ok      { color: #16a34a; }
+  .link-status.broken  { color: #dc2626; }
+  .link-status.unknown { color: #9ca3af; }
+  .link-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .link-status.ok .dot      { background: #16a34a; }
+  .link-status.broken .dot  { background: #dc2626; }
+  .link-status.unknown .dot { background: #9ca3af; }
+
+  .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
+  tr.row-broken td { background: #fef2f2; }
+
+  .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
 
   @media (max-width: 500px) {
     body { padding: 12px; }
@@ -425,12 +604,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="updated">Обновлено: <span id="updated"></span></div>
 
   <div class="stats">
-    <div class="stat">          <div class="value" id="total">0</div>   <div class="label">Всего активных</div></div>
-    <div class="stat done">     <div class="value" id="done">0</div>    <div class="label">На Диске</div></div>
-    <div class="stat pending">  <div class="value" id="pending">0</div> <div class="label">Ожидают</div></div>
-    <div class="stat priority"> <div class="value" id="prio">0</div>    <div class="label">Приоритет · Новый ЦФЗ</div></div>
-    <div class="stat recently"> <div class="value" id="recently">0</div><div class="label">Недавно готово</div></div>
-    <div class="stat">          <div class="value" id="percent">0%</div><div class="label">Готово (активные)</div></div>
+    <div class="stat">          <div class="value" id="total">0</div>    <div class="label">Всего активных</div></div>
+    <div class="stat done">     <div class="value" id="done">0</div>     <div class="label">На Диске</div></div>
+    <div class="stat pending">  <div class="value" id="pending">0</div>  <div class="label">Ожидают</div></div>
+    <div class="stat priority"> <div class="value" id="prio">0</div>     <div class="label">Приоритет · Новый ЦФЗ</div></div>
+    <div class="stat recently"> <div class="value" id="recently">0</div> <div class="label">Недавно готово</div></div>
+    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых ссылок</div></div>
+    <div class="stat">          <div class="value" id="percent">0%</div> <div class="label">Готово (активные)</div></div>
   </div>
 
   <div class="progress-wrap">
@@ -452,14 +632,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </table>
   <div class="legend"><span class="swatch"></span>жёлтым отмечено количество заявок с причиной «Новый ЦФЗ» — они приоритетны к исполнению</div>
 
-  <h2>Недавно готово <span class="badge-count" id="recentlyCount">0</span></h2>
+  <h2>
+    Недавно готово
+    <span class="badge-count" id="recentlyCount">0</span>
+    <span class="badge-count red" id="brokenCount" style="display:none">битых: 0</span>
+  </h2>
+  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate"></b></div>
   <div class="recently-wrap">
     <table>
       <thead><tr>
         <th style="width:70px;text-align:center">#</th>
         <th style="width:120px">Дата готовности</th>
-        <th>SAM</th>
-        <th style="width:110px;text-align:center">Файл</th>
+        <th>Название</th>
+        <th style="width:180px">Ссылка</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -468,16 +653,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <script>
   const DATA = __DATA__;
-  document.getElementById('updated').textContent      = DATA.updated;
-  document.getElementById('total').textContent        = DATA.total;
-  document.getElementById('done').textContent         = DATA.done;
-  document.getElementById('pending').textContent      = DATA.pending;
-  document.getElementById('prio').textContent         = DATA.priority_total;
-  document.getElementById('percent').textContent      = DATA.percent + '%';
-  document.getElementById('progressText').textContent = DATA.done + ' / ' + DATA.total;
-  document.getElementById('progressBar').style.width  = DATA.percent + '%';
-  document.getElementById('recently').textContent     = DATA.recently_total;
+  document.getElementById('updated').textContent       = DATA.updated;
+  document.getElementById('total').textContent         = DATA.total;
+  document.getElementById('done').textContent          = DATA.done;
+  document.getElementById('pending').textContent       = DATA.pending;
+  document.getElementById('prio').textContent          = DATA.priority_total;
+  document.getElementById('percent').textContent       = DATA.percent + '%';
+  document.getElementById('progressText').textContent  = DATA.done + ' / ' + DATA.total;
+  document.getElementById('progressBar').style.width   = DATA.percent + '%';
+  document.getElementById('recently').textContent      = DATA.recently_total;
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
+  document.getElementById('sinceDate').textContent     = DATA.since_date;
+
+  const brokenTotal = DATA.recently_done.filter(r => !r.link_ok && r.link).length;
+  const brokenEl = document.getElementById('broken');
+  const brokenBadge = document.getElementById('brokenCount');
+  brokenEl.textContent = brokenTotal;
+  if (brokenTotal > 0) {
+    brokenBadge.textContent = 'битых: ' + brokenTotal;
+    brokenBadge.style.display = 'inline-block';
+  }
 
   // ---- По городам ----
   const body = document.getElementById('cityBody');
@@ -500,15 +695,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   // ---- Недавно готово ----
   const rbody = document.getElementById('recentlyBody');
   DATA.recently_done.forEach(r => {
-    const linkCell = r.link
-      ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
-      : '<span style="color:#9ca3af">—</span>';
+    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет ссылки</span>';
+    if (r.link) {
+      if (r.link_ok) {
+        linkCell =
+          '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
+          '<span class="link-status ok"><span class="dot"></span>ok</span>';
+      } else {
+        linkCell =
+          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
+          '<span class="link-status broken"><span class="dot"></span>' + (r.link_reason || 'битая') + '</span>';
+      }
+    }
     const tr = document.createElement('tr');
+    if (r.link && !r.link_ok) tr.className = 'row-broken';
     tr.innerHTML =
       '<td class="num">' + r.num + '</td>' +
       '<td>' + r.date + '</td>' +
       '<td>' + r.sam + '</td>' +
-      '<td style="text-align:center">' + linkCell + '</td>';
+      '<td>' + linkCell + '</td>';
     rbody.appendChild(tr);
   });
 </script>
@@ -517,8 +722,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
-def generate_html(active_data, recently_data, path):
-    # --- Статистика по активным ---
+def generate_html(active_data, recently_rows, since_dt, path):
     total   = len(active_data)
     done    = sum(1 for r in active_data if r[3] == "done")
     pending = total - done
@@ -548,18 +752,25 @@ def generate_html(active_data, recently_data, path):
         for c, v in sorted(by_city.items())
     ]
 
-    # --- Список недавно готовых ---
     recently_payload = [
-        {"num": num, "date": date, "sam": sam, "link": link}
-        for num, date, sam, link in recently_data
+        {
+            "num": num,
+            "date": date,
+            "sam": sam,
+            "link": link,
+            "link_ok": bool(link_ok),
+            "link_reason": link_reason,
+        }
+        for num, date, sam, link, link_ok, link_reason in recently_rows
     ]
 
     payload = {
         "total": total, "done": done, "pending": pending, "percent": percent,
         "priority_total": priority_total,
-        "recently_total": len(recently_data),
+        "recently_total": len(recently_rows),
         "cities": cities,
         "recently_done": recently_payload,
+        "since_date": since_dt.strftime("%d.%m.%Y"),
         "updated": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -575,34 +786,62 @@ def generate_html(active_data, recently_data, path):
 # =========================================================
 if __name__ == "__main__":
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    })
+    session.headers.update({"User-Agent": UA_STRING})
 
-    active_data, recently_data = fetch_and_parse(session, TARGET_URL)
+    active_data, recently_raw = fetch_and_parse(session, TARGET_URL)
 
-    if not active_data and not recently_data:
+    if not active_data and not recently_raw:
         print("\n❌ Не удалось получить данные.")
         raise SystemExit(1)
 
-    save_active_csv(active_data, OUTPUT_CSV)
-    save_recently_csv(recently_data, RECENTLY_CSV)
-    generate_html(active_data, recently_data, OUTPUT_HTML)
+    # --- Фильтр «Недавно готово» по дате ---
+    print(f"\n=== Фильтр «Недавно готово» (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}) ===")
+    recently_filtered, dropped = filter_recently_by_date(recently_raw, RECENTLY_SINCE)
+    print(f"   всего в таблице: {len(recently_raw)}, "
+          f"попало под фильтр: {len(recently_filtered)}, отброшено: {dropped}")
 
-    # --- ВЫГРУЗКА НА GITHUB PAGES ---
+    # --- Проверка ссылок ---
+    if LINK_CHECK_ENABLED and recently_filtered:
+        urls = [row[3] for row in recently_filtered if row[3]]
+        link_results = check_links_parallel(urls)
+    else:
+        print("\n⏭ Проверка ссылок отключена (LINK_CHECK_ENABLED=false)")
+        link_results = {}
+
+    # Обогащаем recently_filtered: (num, date, sam, link, link_ok, link_reason, d)
+    recently_enriched = []
+    for num, date, sam, link, d in recently_filtered:
+        if not link:
+            ok, reason = False, "нет ссылки"
+        elif link in link_results:
+            ok, reason = link_results[link]
+        else:
+            ok, reason = False, "не проверялась"
+        recently_enriched.append((num, date, sam, link, ok, reason, d))
+
+    # Сортируем по дате — свежие сверху
+    recently_enriched.sort(key=lambda r: r[6], reverse=True)
+    recently_out = [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in recently_enriched]
+
+    # --- Сохранение ---
+    save_active_csv(active_data, OUTPUT_CSV)
+    save_recently_csv(recently_out, RECENTLY_CSV)
+    generate_html(active_data, recently_out, RECENTLY_SINCE, OUTPUT_HTML)
+
+    # --- Выгрузка на GitHub ---
     try:
         github_upload_dashboard(OUTPUT_HTML)
     except Exception as e:
         gh_log(f"❌ Синхронизация с GitHub упала: {e}")
 
-    # --- ИТОГИ ---
+    # --- Итоги ---
     total   = len(active_data)
     done    = sum(1 for r in active_data if r[3] == "done")
     pending = total - done
     percent = round(done * 100 / total) if total else 0
     prio    = sum(1 for r in active_data
                   if r[3] == "pending" and PRIORITY_REASON.lower() in r[4].lower())
+    broken  = sum(1 for r in recently_out if r[3] and not r[4])
 
     print()
     print("=" * 55)
@@ -610,5 +849,6 @@ if __name__ == "__main__":
     print(f"🟢 На Диске: {done} ({percent}%)")
     print(f"🔴 Ожидают: {pending}")
     print(f"🟡 Приоритет (Новый ЦФЗ): {prio}")
-    print(f"🔵 Недавно готово: {len(recently_data)}")
+    print(f"🔵 Недавно готово (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}): {len(recently_out)}")
+    print(f"❌ Битых ссылок: {broken}")
     print("=" * 55)
