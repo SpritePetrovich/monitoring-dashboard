@@ -1,4 +1,4 @@
-﻿import os
+import os
 import sys
 import json
 import base64
@@ -17,21 +17,20 @@ if sys.platform == "win32":
 
 # ---------- НАСТРОЙКИ ПАРСЕРА ----------
 LOGIN      = os.getenv("ZK_LOGIN", "ka")
-PASSWORD   = os.getenv("ZK_PASSWORD", "")   # задаётся в env / secrets
+PASSWORD   = os.getenv("ZK_PASSWORD", "")
 BASE_URL   = "https://www.zayavka-karty.ru"
 TARGET_URL = BASE_URL + "/ka"
 
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR  = SCRIPT_DIR
 OUTPUT_CSV  = os.path.join(OUTPUT_DIR, "output.csv")
+RECENTLY_CSV = os.path.join(OUTPUT_DIR, "recently_done.csv")
 OUTPUT_HTML = os.path.join(OUTPUT_DIR, "dashboard.html")
 DEBUG_HTML  = os.path.join(OUTPUT_DIR, "_debug_page.html")
 
 PRIORITY_REASON = "Новый ЦФЗ"
 
 # ---------- НАСТРОЙКИ GITHUB ----------
-# В GitHub Actions GITHUB_TOKEN подставляется автоматически через secrets.GITHUB_TOKEN.
-# Локально его нужно задать вручную в переменных окружения (см. инструкцию ниже).
 GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN", "")
 GITHUB_USERNAME  = os.getenv("GITHUB_USERNAME", "SpritePetrovich")
 GITHUB_REPO      = os.getenv("GITHUB_REPO", "monitoring-dashboard")
@@ -51,7 +50,7 @@ def github_upload_dashboard(local_html_path):
     print("\n=== Выгрузка на GitHub Pages ===")
 
     if not GITHUB_TOKEN:
-        gh_log("❌ GITHUB_TOKEN не задан (ни в env, ни в secrets). Пропускаем.")
+        gh_log("❌ GITHUB_TOKEN не задан. Пропускаем.")
         return False
     if not GITHUB_USERNAME:
         gh_log("❌ GITHUB_USERNAME не задан. Пропускаем.")
@@ -78,7 +77,6 @@ def github_upload_dashboard(local_html_path):
 
     content_encoded = base64.b64encode(content.encode("utf-8")).decode("utf-8")
 
-    # 1) Проверяем, есть ли уже файл (нужен SHA для обновления)
     try:
         r = requests.get(api_url, headers=headers, timeout=20)
     except Exception as e:
@@ -100,7 +98,6 @@ def github_upload_dashboard(local_html_path):
     else:
         gh_log(f"⚠️ Проверка файла: {r.status_code} {r.text[:200]}")
 
-    # 2) Формируем коммит
     data = {
         "message": f"Auto-update dashboard: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
         "content": content_encoded,
@@ -109,7 +106,6 @@ def github_upload_dashboard(local_html_path):
     if sha:
         data["sha"] = sha
 
-    # 3) PUT — создаём или обновляем
     try:
         r = requests.put(api_url, headers=headers, json=data, timeout=30)
     except Exception as e:
@@ -124,8 +120,7 @@ def github_upload_dashboard(local_html_path):
     if r.status_code == 409:
         gh_log("❌ 409 Conflict — SHA устарел, попробуйте ещё раз.")
     elif r.status_code == 422:
-        gh_log(f"❌ 422 — вероятно, неверная ветка '{GITHUB_BRANCH}'. "
-               f"Проверьте, как называется основная (main/master).")
+        gh_log(f"❌ 422 — вероятно, неверная ветка '{GITHUB_BRANCH}'.")
     else:
         gh_log(f"❌ Ошибка загрузки: {r.status_code} {r.text[:300]}")
     return False
@@ -188,74 +183,32 @@ def login(session):
 # =========================================================
 # ==================== ПАРСИНГ ============================
 # =========================================================
-def parse(session, url):
-    print(f"\n=== Парсинг {url} ===")
-    try:
-        resp = session.get(url)
-        resp.raise_for_status()
-    except Exception as e:
-        print(f"❌ GET {url}: {e}")
-        return []
-
-    print(f"   статус {resp.status_code}, длина {len(resp.text)}")
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    with open(DEBUG_HTML, "w", encoding="utf-8") as f:
-        f.write(resp.text)
-    print(f"   HTML: {DEBUG_HTML}")
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    tables = soup.find_all("table")
-    print(f"   таблиц: {len(tables)}")
-
-    target, headers = None, None
-    for i, table in enumerate(tables):
-        thead = table.find("thead")
-        if not thead:
-            continue
-        ths = [th.get_text(strip=True).replace("\xa0", " ") for th in thead.find_all("th")]
-        print(f"     #{i}: {ths}")
-        if "Город" in ths and "Название SAM" in ths:
-            target, headers = table, ths
-            print(f"   ✅ выбрана таблица #{i}")
-            break
-
-    if not target:
-        print("❌ Таблица не найдена")
-        return []
-
+def _parse_active_table(table, headers):
+    """Активные заявки: №, Город, SAM, статус, причина."""
     def idx(*names):
         for n in names:
             if n in headers:
                 return headers.index(n)
         return None
 
-    i_num    = idx("#")
+    i_num    = idx("#") or 0
     i_city   = idx("Город")
     i_sam    = idx("Название SAM")
     i_status = idx("Карта")
     i_reason = idx("Причина")
 
     if i_city is None or i_sam is None:
-        print("❌ Не нашли 'Город'/'Название SAM'")
         return []
 
-    if i_num is None:
-        i_num = 0
-
-    print(f"   индексы: №={i_num}, Город={i_city}, SAM={i_sam}, "
-          f"Карта={i_status}, Причина={i_reason}")
-
-    tbody = target.find("tbody")
+    tbody = table.find("tbody")
     if not tbody:
-        print("❌ Нет tbody")
         return []
 
     max_idx = max(x for x in [i_num, i_city, i_sam,
                               i_status if i_status is not None else 0,
                               i_reason if i_reason is not None else 0])
 
-    data = []
+    rows = []
     for row in tbody.find_all("tr"):
         cols = row.find_all("td")
         if len(cols) <= max_idx:
@@ -266,24 +219,122 @@ def parse(session, url):
         status = "done" if (i_status is not None and "На Диске" in cols[i_status].get_text()) else "pending"
         reason = cols[i_reason].get_text(strip=True) if i_reason is not None else ""
         if num and city and sam:
-            data.append((num, city, sam, status, reason))
+            rows.append((num, city, sam, status, reason))
+    return rows
 
-    print(f"   ✅ извлечено: {len(data)}")
-    if data:
-        print(f"     пример: {data[0]}")
-    return data
+
+def _parse_recently_done_table(table, headers):
+    """Недавно готово: №, дата готовности, SAM, ссылка на файл."""
+    def idx(name):
+        return headers.index(name) if name in headers else None
+
+    i_num  = idx("#")
+    i_date = idx("Готово")
+    i_sam  = idx("SAM")
+    i_link = idx("Ссылка")
+
+    if i_sam is None:
+        return []
+
+    tbody = table.find("tbody")
+    if not tbody:
+        return []
+
+    max_idx = max(x for x in [i_num or 0, i_date or 0, i_sam, i_link or 0])
+
+    rows = []
+    for row in tbody.find_all("tr"):
+        cols = row.find_all("td")
+        if len(cols) <= max_idx:
+            continue
+        num  = cols[i_num].get_text(strip=True) if i_num is not None else ""
+        date = cols[i_date].get_text(strip=True) if i_date is not None else ""
+        sam  = cols[i_sam].get_text(strip=True)
+        link = ""
+        if i_link is not None:
+            a = cols[i_link].find("a")
+            if a:
+                link = a.get("href", "")
+        if num and sam:
+            rows.append((num, date, sam, link))
+    return rows
+
+
+def parse_soup(soup):
+    """Возвращает (active_rows, recently_done_rows)."""
+    active, recently_done = [], []
+
+    tables = soup.find_all("table")
+    print(f"   таблиц: {len(tables)}")
+
+    for i, table in enumerate(tables):
+        thead = table.find("thead")
+        if not thead:
+            continue
+        ths = [th.get_text(strip=True).replace("\xa0", " ") for th in thead.find_all("th")]
+        print(f"     #{i}: {ths}")
+
+        if "Город" in ths and "Название SAM" in ths:
+            print(f"   ✅ активная таблица: #{i}")
+            active = _parse_active_table(table, ths)
+        elif "Готово" in ths and "SAM" in ths and "Ссылка" in ths:
+            print(f"   ✅ таблица «Недавно готово»: #{i}")
+            recently_done = _parse_recently_done_table(table, ths)
+
+    return active, recently_done
+
+
+def fetch_and_parse(session, url):
+    """Загружает страницу, при необходимости логинится, парсит обе таблицы."""
+    print(f"\n=== Парсинг {url} ===")
+    try:
+        resp = session.get(url)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"❌ GET {url}: {e}")
+        return [], []
+
+    print(f"   статус {resp.status_code}, длина {len(resp.text)}")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(DEBUG_HTML, "w", encoding="utf-8") as f:
+        f.write(resp.text)
+    print(f"   HTML: {DEBUG_HTML}")
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    active, recently = parse_soup(soup)
+
+    if not active and not recently:
+        print("\n>>> Пробуем авторизоваться.")
+        if login(session):
+            resp = session.get(url)
+            with open(DEBUG_HTML, "w", encoding="utf-8") as f:
+                f.write(resp.text)
+            soup = BeautifulSoup(resp.text, "html.parser")
+            active, recently = parse_soup(soup)
+
+    return active, recently
 
 
 # =========================================================
 # ==================== CSV ================================
 # =========================================================
-def save_csv(data, path):
+def save_active_csv(data, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8-sig") as f:
+        f.write("num;city;sam;status;reason\n")
         for num, city, sam, status, reason in data:
-            # ";" — разделитель, понятный Excel с русской локалью
             f.write(f"{num};{city};{sam};{status};{reason}\n")
-    print(f"💾 CSV: {path}")
+    print(f"💾 CSV (активные): {path}")
+
+
+def save_recently_csv(data, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8-sig") as f:
+        f.write("num;date_done;sam;link\n")
+        for num, date, sam, link in data:
+            f.write(f"{num};{date};{sam};{link}\n")
+    print(f"💾 CSV (недавно готово): {path}")
 
 
 # =========================================================
@@ -299,21 +350,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6f8; color: #1a1d24; padding: 24px; line-height: 1.5; }
-  .container { max-width: 980px; margin: 0 auto; }
+  .container { max-width: 1080px; margin: 0 auto; }
   h1 { font-size: 24px; margin-bottom: 4px; }
+  h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .badge-count {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
+  }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
            gap: 12px; margin-bottom: 24px; }
-  .stat { background: #fff; border-radius: 12px; padding: 20px;
+  .stat { background: #fff; border-radius: 12px; padding: 18px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
-  .stat .value { font-size: 36px; font-weight: 700; }
-  .stat .label { font-size: 13px; color: #6b7280; margin-top: 4px; }
+  .stat .value { font-size: 32px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
   .stat.done    .value { color: #16a34a; }
   .stat.pending .value { color: #dc2626; }
   .stat.priority { background: #fef3c7; border: 1px solid #fcd34d; }
   .stat.priority .value { color: #b45309; }
   .stat.priority .label { color: #92400e; font-weight: 600; }
+  .stat.recently .value { color: #2563eb; }
 
   .progress-wrap { background: #fff; border-radius: 12px; padding: 16px 20px;
                    margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -323,7 +380,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .progress-bar { height: 100%; background: linear-gradient(90deg, #16a34a, #22c55e);
                   border-radius: 5px; transition: width 0.6s ease; }
 
-  h2 { font-size: 16px; margin-bottom: 12px; }
   table { width: 100%; border-collapse: collapse; background: #fff;
           border-radius: 12px; overflow: hidden;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -331,7 +387,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   th { background: #fafafa; font-size: 12px; text-transform: uppercase;
        color: #6b7280; font-weight: 600; }
   tr:last-child td { border-bottom: none; }
-  td.num     { text-align: center; font-variant-numeric: tabular-nums; }
+  td.num     { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
   td.done    { color: #16a34a; font-weight: 600; text-align: center; }
   td.pending { color: #dc2626; text-align: center; }
 
@@ -350,9 +406,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     background: #fef3c7; border: 1px solid #fcd34d;
                     border-radius: 3px; vertical-align: middle; margin-right: 4px; }
 
+  a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
+  a.file-link:hover { text-decoration: underline; }
+
+  .recently-wrap { max-height: 600px; overflow-y: auto; border-radius: 12px; }
+  .recently-wrap table { box-shadow: none; }
+
   @media (max-width: 500px) {
     body { padding: 12px; }
-    .stat .value { font-size: 28px; }
+    .stat .value { font-size: 24px; }
     th, td { padding: 8px 10px; font-size: 13px; }
   }
 </style>
@@ -363,15 +425,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="updated">Обновлено: <span id="updated"></span></div>
 
   <div class="stats">
-    <div class="stat">          <div class="value" id="total">0</div>   <div class="label">Всего заявок</div></div>
+    <div class="stat">          <div class="value" id="total">0</div>   <div class="label">Всего активных</div></div>
     <div class="stat done">     <div class="value" id="done">0</div>    <div class="label">На Диске</div></div>
     <div class="stat pending">  <div class="value" id="pending">0</div> <div class="label">Ожидают</div></div>
     <div class="stat priority"> <div class="value" id="prio">0</div>    <div class="label">Приоритет · Новый ЦФЗ</div></div>
-    <div class="stat">          <div class="value" id="percent">0%</div><div class="label">Готово</div></div>
+    <div class="stat recently"> <div class="value" id="recently">0</div><div class="label">Недавно готово</div></div>
+    <div class="stat">          <div class="value" id="percent">0%</div><div class="label">Готово (активные)</div></div>
   </div>
 
   <div class="progress-wrap">
-    <div class="progress-header"><span>Прогресс</span><span id="progressText">0 / 0</span></div>
+    <div class="progress-header"><span>Прогресс активных</span><span id="progressText">0 / 0</span></div>
     <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
   </div>
 
@@ -388,6 +451,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <tbody id="cityBody"></tbody>
   </table>
   <div class="legend"><span class="swatch"></span>жёлтым отмечено количество заявок с причиной «Новый ЦФЗ» — они приоритетны к исполнению</div>
+
+  <h2>Недавно готово <span class="badge-count" id="recentlyCount">0</span></h2>
+  <div class="recently-wrap">
+    <table>
+      <thead><tr>
+        <th style="width:70px;text-align:center">#</th>
+        <th style="width:120px">Дата готовности</th>
+        <th>SAM</th>
+        <th style="width:110px;text-align:center">Файл</th>
+      </tr></thead>
+      <tbody id="recentlyBody"></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
@@ -400,7 +476,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   document.getElementById('percent').textContent      = DATA.percent + '%';
   document.getElementById('progressText').textContent = DATA.done + ' / ' + DATA.total;
   document.getElementById('progressBar').style.width  = DATA.percent + '%';
+  document.getElementById('recently').textContent     = DATA.recently_total;
+  document.getElementById('recentlyCount').textContent = DATA.recently_total;
 
+  // ---- По городам ----
   const body = document.getElementById('cityBody');
   DATA.cities.forEach(c => {
     const pct = c.total ? Math.round(c.done / c.total * 100) : 0;
@@ -417,25 +496,41 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       '<td><span class="bar-mini"><div style="width:' + pct + '%"></div></span>' + pct + '%</td>';
     body.appendChild(tr);
   });
+
+  // ---- Недавно готово ----
+  const rbody = document.getElementById('recentlyBody');
+  DATA.recently_done.forEach(r => {
+    const linkCell = r.link
+      ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
+      : '<span style="color:#9ca3af">—</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="num">' + r.num + '</td>' +
+      '<td>' + r.date + '</td>' +
+      '<td>' + r.sam + '</td>' +
+      '<td style="text-align:center">' + linkCell + '</td>';
+    rbody.appendChild(tr);
+  });
 </script>
 </body>
 </html>
 """
 
 
-def generate_html(data, path):
-    total   = len(data)
-    done    = sum(1 for r in data if r[3] == "done")
+def generate_html(active_data, recently_data, path):
+    # --- Статистика по активным ---
+    total   = len(active_data)
+    done    = sum(1 for r in active_data if r[3] == "done")
     pending = total - done
     percent = round(done * 100 / total) if total else 0
 
     def is_priority(reason, status):
         return status == "pending" and PRIORITY_REASON.lower() in reason.lower()
 
-    priority_total = sum(1 for r in data if is_priority(r[4], r[3]))
+    priority_total = sum(1 for r in active_data if is_priority(r[4], r[3]))
 
     by_city = defaultdict(lambda: {"total": 0, "done": 0, "priority": 0})
-    for _, city, _, status, reason in data:
+    for _, city, _, status, reason in active_data:
         by_city[city]["total"] += 1
         if status == "done":
             by_city[city]["done"] += 1
@@ -453,10 +548,18 @@ def generate_html(data, path):
         for c, v in sorted(by_city.items())
     ]
 
+    # --- Список недавно готовых ---
+    recently_payload = [
+        {"num": num, "date": date, "sam": sam, "link": link}
+        for num, date, sam, link in recently_data
+    ]
+
     payload = {
         "total": total, "done": done, "pending": pending, "percent": percent,
         "priority_total": priority_total,
+        "recently_total": len(recently_data),
         "cities": cities,
+        "recently_done": recently_payload,
         "updated": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
 
@@ -477,18 +580,15 @@ if __name__ == "__main__":
                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
     })
 
-    data = parse(session, TARGET_URL)
-    if not data:
-        print("\n>>> Пробуем авторизоваться.")
-        if login(session):
-            data = parse(session, TARGET_URL)
+    active_data, recently_data = fetch_and_parse(session, TARGET_URL)
 
-    if not data:
+    if not active_data and not recently_data:
         print("\n❌ Не удалось получить данные.")
         raise SystemExit(1)
 
-    save_csv(data, OUTPUT_CSV)
-    generate_html(data, OUTPUT_HTML)
+    save_active_csv(active_data, OUTPUT_CSV)
+    save_recently_csv(recently_data, RECENTLY_CSV)
+    generate_html(active_data, recently_data, OUTPUT_HTML)
 
     # --- ВЫГРУЗКА НА GITHUB PAGES ---
     try:
@@ -497,17 +597,18 @@ if __name__ == "__main__":
         gh_log(f"❌ Синхронизация с GitHub упала: {e}")
 
     # --- ИТОГИ ---
-    total   = len(data)
-    done    = sum(1 for r in data if r[3] == "done")
+    total   = len(active_data)
+    done    = sum(1 for r in active_data if r[3] == "done")
     pending = total - done
     percent = round(done * 100 / total) if total else 0
-    prio    = sum(1 for r in data
+    prio    = sum(1 for r in active_data
                   if r[3] == "pending" and PRIORITY_REASON.lower() in r[4].lower())
 
     print()
-    print("=" * 50)
-    print(f"✅ Всего: {total}")
+    print("=" * 55)
+    print(f"✅ Активных: {total}")
     print(f"🟢 На Диске: {done} ({percent}%)")
     print(f"🔴 Ожидают: {pending}")
     print(f"🟡 Приоритет (Новый ЦФЗ): {prio}")
-    print("=" * 50)
+    print(f"🔵 Недавно готово: {len(recently_data)}")
+    print("=" * 55)
