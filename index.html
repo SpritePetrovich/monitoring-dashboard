@@ -15,6 +15,7 @@
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
   }
+  .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
@@ -23,12 +24,13 @@
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
   .stat .value { font-size: 32px; font-weight: 700; }
   .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
-  .stat.done    .value { color: #16a34a; }
-  .stat.pending .value { color: #dc2626; }
+  .stat.done     .value { color: #16a34a; }
+  .stat.pending  .value { color: #dc2626; }
   .stat.priority { background: #fef3c7; border: 1px solid #fcd34d; }
   .stat.priority .value { color: #b45309; }
   .stat.priority .label { color: #92400e; font-weight: 600; }
   .stat.recently .value { color: #2563eb; }
+  .stat.broken   .value { color: #dc2626; }
 
   .progress-wrap { background: #fff; border-radius: 12px; padding: 16px 20px;
                    margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
@@ -66,9 +68,24 @@
 
   a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
   a.file-link:hover { text-decoration: underline; }
+  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
+  a.file-link.broken:hover { text-decoration: line-through underline; }
 
-  .recently-wrap { max-height: 600px; overflow-y: auto; border-radius: 12px; }
+  .link-status { display: inline-flex; align-items: center; gap: 6px;
+                 font-size: 12px; font-weight: 600; }
+  .link-status.ok      { color: #16a34a; }
+  .link-status.broken  { color: #dc2626; }
+  .link-status.unknown { color: #9ca3af; }
+  .link-status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .link-status.ok .dot      { background: #16a34a; }
+  .link-status.broken .dot  { background: #dc2626; }
+  .link-status.unknown .dot { background: #9ca3af; }
+
+  .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
+  tr.row-broken td { background: #fef2f2; }
+
+  .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
 
   @media (max-width: 500px) {
     body { padding: 12px; }
@@ -83,12 +100,13 @@
   <div class="updated">Обновлено: <span id="updated"></span></div>
 
   <div class="stats">
-    <div class="stat">          <div class="value" id="total">0</div>   <div class="label">Всего активных</div></div>
-    <div class="stat done">     <div class="value" id="done">0</div>    <div class="label">На Диске</div></div>
-    <div class="stat pending">  <div class="value" id="pending">0</div> <div class="label">Ожидают</div></div>
-    <div class="stat priority"> <div class="value" id="prio">0</div>    <div class="label">Приоритет · Новый ЦФЗ</div></div>
-    <div class="stat recently"> <div class="value" id="recently">0</div><div class="label">Недавно готово</div></div>
-    <div class="stat">          <div class="value" id="percent">0%</div><div class="label">Готово (активные)</div></div>
+    <div class="stat">          <div class="value" id="total">0</div>    <div class="label">Всего активных</div></div>
+    <div class="stat done">     <div class="value" id="done">0</div>     <div class="label">На Диске</div></div>
+    <div class="stat pending">  <div class="value" id="pending">0</div>  <div class="label">Ожидают</div></div>
+    <div class="stat priority"> <div class="value" id="prio">0</div>     <div class="label">Приоритет · Новый ЦФЗ</div></div>
+    <div class="stat recently"> <div class="value" id="recently">0</div> <div class="label">Недавно готово</div></div>
+    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых ссылок</div></div>
+    <div class="stat">          <div class="value" id="percent">0%</div> <div class="label">Готово (активные)</div></div>
   </div>
 
   <div class="progress-wrap">
@@ -110,14 +128,19 @@
   </table>
   <div class="legend"><span class="swatch"></span>жёлтым отмечено количество заявок с причиной «Новый ЦФЗ» — они приоритетны к исполнению</div>
 
-  <h2>Недавно готово <span class="badge-count" id="recentlyCount">0</span></h2>
+  <h2>
+    Недавно готово
+    <span class="badge-count" id="recentlyCount">0</span>
+    <span class="badge-count red" id="brokenCount" style="display:none">битых: 0</span>
+  </h2>
+  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate"></b></div>
   <div class="recently-wrap">
     <table>
       <thead><tr>
         <th style="width:70px;text-align:center">#</th>
         <th style="width:120px">Дата готовности</th>
-        <th>SAM</th>
-        <th style="width:110px;text-align:center">Файл</th>
+        <th>Название</th>
+        <th style="width:180px">Ссылка</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -125,17 +148,27 @@
 </div>
 
 <script>
-  const DATA = {"total": 50, "done": 5, "pending": 45, "percent": 10, "priority_total": 1, "recently_total": 50, "cities": [{"city": "Альметьевск", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Волгоград", "total": 4, "done": 1, "pending": 3, "priority": 0}, {"city": "Ижевск", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Казань", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Москва", "total": 3, "done": 0, "pending": 3, "priority": 1}, {"city": "Нижний Новгород", "total": 5, "done": 3, "pending": 2, "priority": 0}, {"city": "Новокузнецк", "total": 5, "done": 1, "pending": 4, "priority": 0}, {"city": "Пермь", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Санкт-Петербург", "total": 18, "done": 0, "pending": 18, "priority": 0}, {"city": "Саранск", "total": 2, "done": 0, "pending": 2, "priority": 0}, {"city": "Саратов", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Сочи", "total": 4, "done": 0, "pending": 4, "priority": 0}], "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ"}, {"num": "623", "date": "25.10.2026", "sam": "Большой Тишинский пер 8с1 (МСК)", "link": "https://yadi.sk/i/bk2XQligjBkVJA"}, {"num": "657", "date": "25.10.2026", "sam": "МСК Хорошёвское ш 52к1", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%A5%D0%BE%D1%80%D0%BE%D1%88%D1%91%D0%B2%D1%81%D0%BA%D0%BE%D0%B5%20%D1%88%2052%D0%BA1.png"}, {"num": "656", "date": "25.10.2026", "sam": "Новопесчаная 20/10к2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9D%D0%BE%D0%B2%D0%BE%D0%BF%D0%B5%D1%81%D1%87%D0%B0%D0%BD%D0%B0%D1%8F%2020%2010%D0%BA2.png"}, {"num": "655", "date": "25.10.2026", "sam": "Народного Ополчения 29к3", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9D%D0%B0%D1%80%D0%BE%D0%B4%D0%BD%D0%BE%D0%B3%D0%BE%20%D0%9E%D0%BF%D0%BE%D0%BB%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%2029%D0%BA3.png"}, {"num": "654", "date": "25.10.2026", "sam": "МСК Мукомольный пр-д 2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%9C%D1%83%D0%BA%D0%BE%D0%BC%D0%BE%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%BF%D1%80-%D0%B4%202.png"}, {"num": "645", "date": "25.10.2026", "sam": "МСК 3-я Хорошёвская 17А", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%203-%D1%8F%20%D0%A5%D0%BE%D1%80%D0%BE%D1%88%D1%91%D0%B2%D1%81%D0%BA%D0%B0%D1%8F%2017%D0%90.png"}, {"num": "653", "date": "25.10.2026", "sam": "Мневники 6", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%BD%D0%B5%D0%B2%D0%BD%D0%B8%D0%BA%D0%B8%206.png"}, {"num": "652", "date": "25.10.2026", "sam": "Мневники 23", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%BD%D0%B5%D0%B2%D0%BD%D0%B8%D0%BA%D0%B8%2023.png"}, {"num": "651", "date": "25.10.2026", "sam": "МСК Лизы Чайкиной 6", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%9B%D0%B8%D0%B7%D1%8B%20%D0%A7%D0%B0%D0%B9%D0%BA%D0%B8%D0%BD%D0%BE%D0%B9%206.png"}, {"num": "650", "date": "25.10.2026", "sam": "МСК Ленинградский пр-кт 59", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%9B%D0%B5%D0%BD%D0%B8%D0%BD%D0%B3%D1%80%D0%B0%D0%B4%D1%81%D0%BA%D0%B8%D0%B9%20%D0%BF%D1%80-%D0%BA%D1%82%2059.png"}, {"num": "649", "date": "25.10.2026", "sam": "МСК Ленинградский пр-кт 59", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%9B%D0%B5%D0%BD%D0%B8%D0%BD%D0%B3%D1%80%D0%B0%D0%B4%D1%81%D0%BA%D0%B8%D0%B9%20%D0%BF%D1%80-%D0%BA%D1%82%2059.png"}, {"num": "648", "date": "25.10.2026", "sam": "МСК Берзарина 32", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%91%D0%B5%D1%80%D0%B7%D0%B0%D1%80%D0%B8%D0%BD%D0%B0%2032.png"}, {"num": "647", "date": "25.10.2026", "sam": "Березовой рощи 10 (МСК)", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%91%D0%B5%D1%80%D1%91%D0%B7%D0%BE%D0%B2%D0%BE%D0%B9%20%D0%A0%D0%BE%D1%89%D0%B8%2010.png"}, {"num": "646", "date": "25.10.2026", "sam": "МСК 8 Марта 4-я 6А", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%208%20%D0%9C%D0%B0%D1%80%D1%82%D0%B0%204-%D1%8F%206%D0%90.png"}, {"num": "644", "date": "25.10.2026", "sam": "МСК Генерала Глаголева 19", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%93%D0%B5%D0%BD%D0%B5%D1%80%D0%B0%D0%BB%D0%B0%20%D0%93%D0%BB%D0%B0%D0%B3%D0%BE%D0%BB%D0%B5%D0%B2%D0%B0%2019.png"}, {"num": "659", "date": "25.10.2026", "sam": "МСК Шелепихинская наб 34к4", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9C%D0%A1%D0%9A%20%D0%A8%D0%B5%D0%BB%D0%B5%D0%BF%D0%B8%D1%85%D0%B8%D0%BD%D1%81%D0%BA%D0%B0%D1%8F%20%D0%BD%D0%B0%D0%B1%2034%D0%BA4.png"}, {"num": "658", "date": "25.10.2026", "sam": "Черняховского 9к5", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%A7%D0%B5%D1%80%D0%BD%D1%8F%D1%85%D0%BE%D0%B2%D1%81%D0%BA%D0%BE%D0%B3%D0%BE%209%D0%BA5.png"}, {"num": "643", "date": "25.10.2026", "sam": "ВЛГ Волжский 40 лет Победы 26", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%92%D0%BE%D0%BB%D0%B3%D0%BE%D0%B3%D1%80%D0%B0%D0%B4/%D0%92%D0%9B%D0%93%20%D0%92%D0%BE%D0%BB%D0%B6%D1%81%D0%BA%D0%B8%D0%B9%2040%20%D0%BB%D0%B5%D1%82%20%D0%9F%D0%BE%D0%B1%D0%B5%D0%B4%D1%8B%2026.png"}, {"num": "642", "date": "25.10.2026", "sam": "Волжский Труда пл 19", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%92%D0%BE%D0%BB%D0%B3%D0%BE%D0%B3%D1%80%D0%B0%D0%B4/%D0%92%D0%BE%D0%BB%D0%B6%D1%81%D0%BA%D0%B8%D0%B9%20%D0%A2%D1%80%D1%83%D0%B4%D0%B0%20%D0%BF%D0%BB%2019.png"}, {"num": "641", "date": "25.10.2026", "sam": "Алтайская 76/3", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A2%D0%BE%D0%BC%D1%81%D0%BA/%D0%90%D0%BB%D1%82%D0%B0%D0%B9%D1%81%D0%BA%D0%B0%D1%8F%2076%203.png"}, {"num": "639", "date": "25.10.2026", "sam": "ТМК Зональная Станция Тояновский пер 16", "link": "https://yadi.sk/i/VhPmwt8N6Opa_g"}, {"num": "640", "date": "25.10.2026", "sam": "ТМК Сакко пер 2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A2%D0%BE%D0%BC%D1%81%D0%BA/%D0%A2%D0%9C%D0%9A%20%D0%A1%D0%B0%D0%BA%D0%BA%D0%BE%20%D0%BF%D0%B5%D1%80%202.png"}, {"num": "638", "date": "25.10.2026", "sam": "НН Академика Сахарова 99", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%90%D0%BA%D0%B0%D0%B4%D0%B5%D0%BC%D0%B8%D0%BA%D0%B0%20%D0%A1%D0%B0%D1%85%D0%B0%D1%80%D0%BE%D0%B2%D0%B0%2099.png"}, {"num": "637", "date": "25.10.2026", "sam": "СТВ Розы Люксембург 3", "link": "https://yadi.sk/i/-_HhTr0Dq-fg3Q"}, {"num": "636", "date": "25.10.2026", "sam": "КЗН Азата Аббасова 23", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9A%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/%D0%9A%D0%97%D0%9D%20%D0%90%D0%B7%D0%B0%D1%82%D0%B0%20%D0%90%D0%B1%D0%B1%D0%B0%D1%81%D0%BE%D0%B2%D0%B0%2023.png"}, {"num": "632", "date": "25.10.2026", "sam": "Масловка Нижняя 18 (МСК)", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9C%D0%BE%D1%81%D0%BA%D0%B2%D0%B0/%D0%9D%D0%B8%D0%B6%D0%BD%D1%8F%D1%8F%20%D0%9C%D0%B0%D1%81%D0%BB%D0%BE%D0%B2%D0%BA%D0%B0%2018.png"}, {"num": "527", "date": "25.10.2026", "sam": "НН Тираспольская 9", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%A2%D0%B8%D1%80%D0%B0%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D1%81%D0%BA%D0%B0%D1%8F%209.png"}, {"num": "526", "date": "25.10.2026", "sam": "НН Сурикова 16", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%A1%D1%83%D1%80%D0%B8%D0%BA%D0%BE%D0%B2%D0%B0%2016.png"}, {"num": "503", "date": "25.10.2026", "sam": "ТМБ Мичуринская 82", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A2%D0%B0%D0%BC%D0%B1%D0%BE%D0%B2/%D0%A2%D0%9C%D0%91%20%D0%9C%D0%B8%D1%87%D1%83%D1%80%D0%B8%D0%BD%D1%81%D0%BA%D0%B0%D1%8F%2082.png"}, {"num": "502", "date": "25.10.2026", "sam": "ТМБ Рылеева 61Б", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A2%D0%B0%D0%BC%D0%B1%D0%BE%D0%B2/%D0%A2%D0%9C%D0%91%20%D0%A0%D1%8B%D0%BB%D0%B5%D0%B5%D0%B2%D0%B0%2061%D0%91.png"}, {"num": "597", "date": "25.10.2026", "sam": "ННК Строителей пр-кт 27А", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B5%D0%BA%D0%B0%D0%BC%D1%81%D0%BA/%D0%9D%D0%9D%D0%9A%20%D0%A1%D1%82%D1%80%D0%BE%D0%B8%D1%82%D0%B5%D0%BB%D0%B5%D0%B9%20%D0%BF%D1%80-%D0%BA%D1%82%2027%D0%90.png"}, {"num": "595", "date": "25.10.2026", "sam": "ННК Химиков пр-кт 78Б", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B5%D0%BA%D0%B0%D0%BC%D1%81%D0%BA/%D0%9D%D0%9D%D0%9A%20%D0%A5%D0%B8%D0%BC%D0%B8%D0%BA%D0%BE%D0%B2%20%D0%BF%D1%80-%D0%BA%D1%82%2078%D0%91.png"}, {"num": "594", "date": "25.10.2026", "sam": "ННК Шинников пр-кт 3Г", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B5%D0%BA%D0%B0%D0%BC%D1%81%D0%BA/%D0%9D%D0%9D%D0%9A%20%D0%A8%D0%B8%D0%BD%D0%BD%D0%B8%D0%BA%D0%BE%D0%B2%20%D0%BF%D1%80-%D0%BA%D1%82%203%D0%93.png"}, {"num": "593", "date": "25.10.2026", "sam": "КЗН Ямашева пр-кт 100Г", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9A%D0%B0%D0%B7%D0%B0%D0%BD%D1%8C/%D0%9A%D0%97%D0%9D%20%D0%AF%D0%BC%D0%B0%D1%88%D0%B5%D0%B2%D0%B0%20%D0%BF%D1%80-%D0%BA%D1%82%20100%D0%93.png"}, {"num": "592", "date": "25.10.2026", "sam": "БНЛ 280-летия Барнаула 17", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%91%D0%B0%D1%80%D0%BD%D0%B0%D1%83%D0%BB/%D0%91%D0%9D%D0%9B%20280-%D0%BB%D0%B5%D1%82%D0%B8%D1%8F%20%D0%91%D0%B0%D1%80%D0%BD%D0%B0%D1%83%D0%BB%D0%B0%2017.png"}, {"num": "591", "date": "25.10.2026", "sam": "КНД Селезнева им 4/10", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9A%D1%80%D0%B0%D1%81%D0%BD%D0%BE%D0%B4%D0%B0%D1%80/%D0%9A%D0%9D%D0%94%20%D0%A1%D0%B5%D0%BB%D0%B5%D0%B7%D0%BD%D0%B5%D0%B2%D0%B0%20%D0%B8%D0%BC%204%2010.png"}, {"num": "590", "date": "25.10.2026", "sam": "СРТ Международная 9", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%9C%D0%B5%D0%B6%D0%B4%D1%83%D0%BD%D0%B0%D1%80%D0%BE%D0%B4%D0%BD%D0%B0%D1%8F%209.png"}, {"num": "586", "date": "25.10.2026", "sam": "СПБ Орбитальная 11стр1", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%B0%D0%BD%D0%BA%D1%82-%D0%9F%D0%B5%D1%82%D0%B5%D1%80%D0%B1%D1%83%D1%80%D0%B3/%D0%A1%D0%9F%D0%91%20%D0%9E%D1%80%D0%B1%D0%B8%D1%82%D0%B0%D0%BB%D1%8C%D0%BD%D0%B0%D1%8F%2011%D1%81%D1%82%D1%801.png"}, {"num": "584", "date": "25.10.2026", "sam": "СПБ Ивановская 13литА", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%B0%D0%BD%D0%BA%D1%82-%D0%9F%D0%B5%D1%82%D0%B5%D1%80%D0%B1%D1%83%D1%80%D0%B3/%D0%A1%D0%9F%D0%91%20%D0%98%D0%B2%D0%B0%D0%BD%D0%BE%D0%B2%D1%81%D0%BA%D0%B0%D1%8F%2013%D0%BB%D0%B8%D1%82%D0%90.png"}, {"num": "581", "date": "25.10.2026", "sam": "СРТ Техническая 14", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%A2%D0%B5%D1%85%D0%BD%D0%B8%D1%87%D0%B5%D1%81%D0%BA%D0%B0%D1%8F%2014.png"}, {"num": "580", "date": "25.10.2026", "sam": "СРТ Строителей 9", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%A1%D1%82%D1%80%D0%BE%D0%B8%D1%82%D0%B5%D0%BB%D0%B5%D0%B9%209.png"}, {"num": "578", "date": "25.10.2026", "sam": "СРТ Героя Советского Союза Ароновой Р.Е. им 6", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%93%D0%B5%D1%80%D0%BE%D1%8F%20%D0%A1%D0%BE%D0%B2%D0%B5%D1%82%D1%81%D0%BA%D0%BE%D0%B3%D0%BE%20%D0%A1%D0%BE%D1%8E%D0%B7%D0%B0%20%D0%90%D1%80%D0%BE%D0%BD%D0%BE%D0%B2%D0%BE%D0%B9%20%D0%A0.%D0%95.%20%D0%B8%D0%BC%206.png"}, {"num": "577", "date": "25.10.2026", "sam": "СРТ 50 лет Октября им пр-кт 108/8", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%2050%20%D0%BB%D0%B5%D1%82%20%D0%9E%D0%BA%D1%82%D1%8F%D0%B1%D1%80%D1%8F%20%D0%B8%D0%BC%20%D0%BF%D1%80-%D0%BA%D1%82%20108%208.png"}, {"num": "576", "date": "25.10.2026", "sam": "СРТ Ипподромная 12", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%98%D0%BF%D0%BF%D0%BE%D0%B4%D1%80%D0%BE%D0%BC%D0%BD%D0%B0%D1%8F%2012.png"}, {"num": "575", "date": "25.10.2026", "sam": "СРТ Лебедева-Кумача В.И. 65пом1", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%9B%D0%B5%D0%B1%D0%B5%D0%B4%D0%B5%D0%B2%D0%B0-%D0%9A%D1%83%D0%BC%D0%B0%D1%87%D0%B0%20%D0%92.%D0%98.%2065%D0%BF%D0%BE%D0%BC1.png"}, {"num": "574", "date": "25.10.2026", "sam": "СРТ Романтиков 48Б", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%A0%D0%BE%D0%BC%D0%B0%D0%BD%D1%82%D0%B8%D0%BA%D0%BE%D0%B2%2048%D0%91.png"}, {"num": "572", "date": "25.10.2026", "sam": "СРТ Героев Отечества пр-кт 9", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%A1%D0%90%D0%A0%D0%90%D0%A2%D0%9E%D0%92/%D0%A1%D0%A0%D0%A2%20%D0%93%D0%B5%D1%80%D0%BE%D0%B5%D0%B2%20%D0%9E%D1%82%D0%B5%D1%87%D0%B5%D1%81%D1%82%D0%B2%D0%B0%20%D0%BF%D1%80-%D0%BA%D1%82%209.png"}, {"num": "569", "date": "25.10.2026", "sam": "БНЛ Попова/Антона Петрова 98/235А", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%91%D0%B0%D1%80%D0%BD%D0%B0%D1%83%D0%BB/%D0%91%D0%9D%D0%9B%20%D0%9F%D0%BE%D0%BF%D0%BE%D0%B2%D0%B0%20%D0%90%D0%BD%D1%82%D0%BE%D0%BD%D0%B0%20%D0%9F%D0%B5%D1%82%D1%80%D0%BE%D0%B2%D0%B0%2098%20235%D0%90.png"}, {"num": "568", "date": "25.10.2026", "sam": "БНЛ Крупской 124", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%91%D0%B0%D1%80%D0%BD%D0%B0%D1%83%D0%BB/%D0%91%D0%9D%D0%9B%20%D0%9A%D1%80%D1%83%D0%BF%D1%81%D0%BA%D0%BE%D0%B9%20124.png"}], "updated": "12.11.2026 13:57"};
-  document.getElementById('updated').textContent      = DATA.updated;
-  document.getElementById('total').textContent        = DATA.total;
-  document.getElementById('done').textContent         = DATA.done;
-  document.getElementById('pending').textContent      = DATA.pending;
-  document.getElementById('prio').textContent         = DATA.priority_total;
-  document.getElementById('percent').textContent      = DATA.percent + '%';
-  document.getElementById('progressText').textContent = DATA.done + ' / ' + DATA.total;
-  document.getElementById('progressBar').style.width  = DATA.percent + '%';
-  document.getElementById('recently').textContent     = DATA.recently_total;
+  const DATA = {"total": 50, "done": 5, "pending": 45, "percent": 10, "priority_total": 1, "recently_total": 1, "cities": [{"city": "Альметьевск", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Волгоград", "total": 4, "done": 1, "pending": 3, "priority": 0}, {"city": "Ижевск", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Казань", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Москва", "total": 3, "done": 0, "pending": 3, "priority": 1}, {"city": "Нижний Новгород", "total": 5, "done": 3, "pending": 2, "priority": 0}, {"city": "Новокузнецк", "total": 5, "done": 1, "pending": 4, "priority": 0}, {"city": "Пермь", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Санкт-Петербург", "total": 18, "done": 0, "pending": 18, "priority": 0}, {"city": "Саранск", "total": 2, "done": 0, "pending": 2, "priority": 0}, {"city": "Саратов", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Сочи", "total": 4, "done": 0, "pending": 4, "priority": 0}], "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "link_ok": false, "link_reason": "страница «файл не найден»"}], "since_date": "01.11.2026", "updated": "12.11.2026 14:53"};
+  document.getElementById('updated').textContent       = DATA.updated;
+  document.getElementById('total').textContent         = DATA.total;
+  document.getElementById('done').textContent          = DATA.done;
+  document.getElementById('pending').textContent       = DATA.pending;
+  document.getElementById('prio').textContent          = DATA.priority_total;
+  document.getElementById('percent').textContent       = DATA.percent + '%';
+  document.getElementById('progressText').textContent  = DATA.done + ' / ' + DATA.total;
+  document.getElementById('progressBar').style.width   = DATA.percent + '%';
+  document.getElementById('recently').textContent      = DATA.recently_total;
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
+  document.getElementById('sinceDate').textContent     = DATA.since_date;
+
+  const brokenTotal = DATA.recently_done.filter(r => !r.link_ok && r.link).length;
+  const brokenEl = document.getElementById('broken');
+  const brokenBadge = document.getElementById('brokenCount');
+  brokenEl.textContent = brokenTotal;
+  if (brokenTotal > 0) {
+    brokenBadge.textContent = 'битых: ' + brokenTotal;
+    brokenBadge.style.display = 'inline-block';
+  }
 
   // ---- По городам ----
   const body = document.getElementById('cityBody');
@@ -158,15 +191,25 @@
   // ---- Недавно готово ----
   const rbody = document.getElementById('recentlyBody');
   DATA.recently_done.forEach(r => {
-    const linkCell = r.link
-      ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
-      : '<span style="color:#9ca3af">—</span>';
+    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет ссылки</span>';
+    if (r.link) {
+      if (r.link_ok) {
+        linkCell =
+          '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
+          '<span class="link-status ok"><span class="dot"></span>ok</span>';
+      } else {
+        linkCell =
+          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
+          '<span class="link-status broken"><span class="dot"></span>' + (r.link_reason || 'битая') + '</span>';
+      }
+    }
     const tr = document.createElement('tr');
+    if (r.link && !r.link_ok) tr.className = 'row-broken';
     tr.innerHTML =
       '<td class="num">' + r.num + '</td>' +
       '<td>' + r.date + '</td>' +
       '<td>' + r.sam + '</td>' +
-      '<td style="text-align:center">' + linkCell + '</td>';
+      '<td>' + linkCell + '</td>';
     rbody.appendChild(tr);
   });
 </script>
