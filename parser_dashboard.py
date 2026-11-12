@@ -31,6 +31,9 @@ DEBUG_HTML   = os.path.join(OUTPUT_DIR, "_debug_page.html")
 
 PRIORITY_REASON = "Новый ЦФЗ"
 
+UA_STRING = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
 
 # ---------- ФИЛЬТР «НЕДАВНО ГОТОВО» ----------
 def _parse_since(value: str) -> datetime:
@@ -55,15 +58,17 @@ def _parse_since(value: str) -> datetime:
     raise ValueError(f"Некорректный RECENTLY_SINCE: {value!r}")
 
 
-# По умолчанию — с 1 ноября текущего года. Можно переопределить через env.
 RECENTLY_SINCE = _parse_since(
     os.getenv("RECENTLY_SINCE", f"11.{datetime.now().year}")
 )
 
-# ---------- НАСТРОЙКИ ПРОВЕРКИ ССЫЛОК ----------
-LINK_CHECK_TIMEOUT = int(os.getenv("LINK_CHECK_TIMEOUT", "10"))
-LINK_CHECK_WORKERS = int(os.getenv("LINK_CHECK_WORKERS", "8"))
-LINK_CHECK_ENABLED = os.getenv("LINK_CHECK_ENABLED", "true").lower() == "true"
+# ---------- ПРОВЕРКА ДАТЫ ЗАГРУЗКИ ----------
+INVALID_UPLOAD_MONTH = int(os.getenv("INVALID_UPLOAD_MONTH", "11"))
+INVALID_UPLOAD_YEAR  = int(os.getenv("INVALID_UPLOAD_YEAR", str(datetime.now().year)))
+
+LINK_CHECK_TIMEOUT = int(os.getenv("LINK_CHECK_TIMEOUT", "15"))
+LINK_CHECK_WORKERS = int(os.getenv("LINK_CHECK_WORKERS", "6"))
+DATE_CHECK_ENABLED = os.getenv("DATE_CHECK_ENABLED", "true").lower() == "true"
 
 # ---------- НАСТРОЙКИ GITHUB ----------
 GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN", "")
@@ -72,8 +77,7 @@ GITHUB_REPO      = os.getenv("GITHUB_REPO", "monitoring-dashboard")
 GITHUB_FILE_PATH = "index.html"
 GITHUB_BRANCH    = os.getenv("GITHUB_BRANCH", "main")
 
-UA_STRING = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+YANDEX_PUBLIC_API = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 
 # =========================================================
@@ -164,80 +168,118 @@ def github_upload_dashboard(local_html_path):
 
 
 # =========================================================
-# ================== ПРОВЕРКА ССЫЛОК ======================
+# ============== ПРОВЕРКА ССЫЛОК И ДАТ ====================
 # =========================================================
-def check_link(url: str, timeout: int = LINK_CHECK_TIMEOUT):
-    """
-    Возвращает (ok: bool, reason: str):
-      ok=True  -> ссылка живая
-      ok=False -> ссылка битая (404/410/страница-ошибка) или не проверена
-    """
-    if not url:
-        return False, "нет ссылки"
-
-    # Отсекаем заведомо мусорные URL
-    if not url.startswith(("http://", "https://")):
-        return False, "некорректный URL"
-
+def _get_upload_date(url: str, timeout: int):
+    """Возвращает (date: datetime | None, reason: str)."""
     try:
         r = requests.get(
-            url, timeout=timeout, stream=True, allow_redirects=True,
-            headers={"User-Agent": UA_STRING},
+            YANDEX_PUBLIC_API,
+            params={"public_key": url, "path": "/"},
+            timeout=timeout,
+            headers={"User-Agent": UA_STRING, "Accept": "application/json"},
         )
     except requests.exceptions.Timeout:
-        return False, "таймаут"
-    except requests.exceptions.SSLError:
-        return False, "SSL-ошибка"
+        return None, "таймаут API"
     except requests.exceptions.ConnectionError:
-        return False, "сеть"
+        return None, "сеть (API)"
     except Exception as e:
-        return False, f"{type(e).__name__}"
+        return None, f"API: {type(e).__name__}"
+
+    if r.status_code != 200:
+        return None, f"API HTTP {r.status_code}"
 
     try:
-        if r.status_code in (404, 410):
-            return False, f"HTTP {r.status_code}"
-        if r.status_code >= 500:
-            return False, f"HTTP {r.status_code} (сервер)"
-        if r.status_code != 200:
-            return False, f"HTTP {r.status_code}"
+        j = r.json()
+    except Exception:
+        return None, "API: не JSON"
 
-        ct = (r.headers.get("Content-Type") or "").lower()
-
-        # Яндекс.Диск может отдать 200 с HTML-страницей "файл не найден"
-        if "text/html" in ct:
-            try:
-                body = r.raw.read(8192, decode_content=True)
-                text = body.decode("utf-8", errors="ignore").lower()
-            except Exception:
-                text = ""
-
-            error_markers = [
-                "файл не найден",
-                "не найден",
-                "not found",
-                "404",
-                "удалён",
-                "удален",
-                "file is missing",
-                "no longer available",
-            ]
-            for m in error_markers:
-                if m in text:
-                    return False, "страница «файл не найден»"
-
-        return True, "ok"
-    finally:
+    if j.get("type") == "file":
+        raw = j.get("created") or j.get("modified")
+        if not raw:
+            return None, "API: нет даты"
         try:
-            r.close()
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")), "ok"
         except Exception:
-            pass
+            return None, "API: дата не парсится"
+
+    if j.get("type") == "dir":
+        return None, "ссылка на папку"
+
+    if "_embedded" in j:
+        items = j["_embedded"].get("items", [])
+        if items:
+            raw = items[0].get("created") or items[0].get("modified")
+            if raw:
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")), "ok"
+                except Exception:
+                    pass
+
+    return None, "API: неизвестная структура"
+
+
+def check_link(url: str, timeout: int = LINK_CHECK_TIMEOUT):
+    """
+    Возвращает (ok, reason, upload_date_str, in_invalid_month).
+    ok=True -> ссылка живая И дата загрузки не в запрещённом месяце
+    """
+    if not url:
+        return False, "нет ссылки", "", False
+    if not url.startswith(("http://", "https://")):
+        return False, "некорректный URL", "", False
+
+    # 1) Проверка живости (HEAD, потом GET)
+    alive = False
+    try:
+        r = requests.head(url, timeout=timeout, allow_redirects=True,
+                          headers={"User-Agent": UA_STRING})
+        alive = r.status_code == 200
+    except Exception:
+        try:
+            r = requests.get(url, timeout=timeout, allow_redirects=True,
+                             stream=True, headers={"User-Agent": UA_STRING})
+            alive = r.status_code == 200
+            try:
+                r.close()
+            except Exception:
+                pass
+        except Exception:
+            alive = False
+
+    # 2) Проверка даты загрузки через публичный API
+    upload_dt, api_reason = (None, "выключено")
+    if DATE_CHECK_ENABLED:
+        upload_dt, api_reason = _get_upload_date(url, timeout)
+
+    if upload_dt is None:
+        if alive:
+            return True, "ok (дата неизвестна)", "", False
+        return False, api_reason or "недоступна", "", False
+
+    upload_str = upload_dt.strftime("%d.%m.%Y %H:%M")
+
+    in_invalid = (
+        upload_dt.month == INVALID_UPLOAD_MONTH
+        and upload_dt.year == INVALID_UPLOAD_YEAR
+    )
+
+    if in_invalid:
+        month_name = {
+            1: "январе", 2: "феврале", 3: "марте", 4: "апреле",
+            5: "мае", 6: "июне", 7: "июле", 8: "августе",
+            9: "сентябре", 10: "октябре", 11: "ноябре", 12: "декабре",
+        }[INVALID_UPLOAD_MONTH]
+        return False, f"загружено в {month_name} {INVALID_UPLOAD_YEAR}", upload_str, True
+
+    if not alive:
+        return False, "файл недоступен", upload_str, False
+
+    return True, "ok", upload_str, False
 
 
 def check_links_parallel(urls: list) -> dict:
-    """
-    Проверяет все URL параллельно.
-    Возвращает {url: (ok: bool, reason: str)}.
-    """
+    """Возвращает {url: (ok, reason, upload_date_str, in_invalid_month)}."""
     result = {}
     if not urls:
         return result
@@ -248,12 +290,14 @@ def check_links_parallel(urls: list) -> dict:
         for i, f in enumerate(as_completed(futures), 1):
             url = futures[f]
             try:
-                ok, reason = f.result()
+                ok, reason, upload_date, in_invalid = f.result()
             except Exception as e:
-                ok, reason = False, f"исключение: {type(e).__name__}"
-            result[url] = (ok, reason)
-            icon = "✅" if ok else "❌"
-            print(f"   [{i}/{len(urls)}] {icon} {reason:<28} {url[:80]}")
+                ok, reason, upload_date, in_invalid = (
+                    False, f"исключение: {type(e).__name__}", "", False
+                )
+            result[url] = (ok, reason, upload_date, in_invalid)
+            icon = "❌" if (not ok or in_invalid) else "✅"
+            print(f"   [{i}/{len(urls)}] {icon} {reason:<45} {upload_date:<18} {url[:65]}")
     return result
 
 
@@ -330,7 +374,6 @@ def _parse_active_table(table, headers):
 
     if i_city is None or i_sam is None:
         return []
-
     if i_num is None:
         i_num = 0
 
@@ -464,13 +507,10 @@ def filter_recently_by_date(rows, since: datetime):
     kept, dropped = [], 0
     for num, date_str, sam, link in rows:
         d = parse_date_dmy(date_str)
-        if d is None:
+        if d is None or d < since:
             dropped += 1
             continue
-        if d >= since:
-            kept.append((num, date_str, sam, link, d))
-        else:
-            dropped += 1
+        kept.append((num, date_str, sam, link, d))
     return kept, dropped
 
 
@@ -487,15 +527,18 @@ def save_active_csv(data, path):
 
 
 def save_recently_csv(rows, path):
-    """rows: [(num, date, sam, link, link_ok, link_reason), ...]"""
+    """rows: список dict (recently_enriched)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;date_done;sam;link;link_ok;link_status\n")
-        for num, date, sam, link, link_ok, link_reason in rows:
-            ok_str = "ok" if link_ok else "broken"
-            # разделитель ";" не встречается в URL, но на всякий случай экранируем
-            link_esc = link.replace(";", "%3B")
-            f.write(f"{num};{date};{sam};{link_esc};{ok_str};{link_reason}\n")
+        f.write("num;date_done;sam;link;link_ok;upload_date;status\n")
+        for r in rows:
+            ok_str = "ok" if r["ok"] else "broken"
+            link_esc = (r["link"] or "").replace(";", "%3B")
+            reason_esc = (r["reason"] or "").replace(";", ",")
+            f.write(
+                f"{r['num']};{r['date']};{r['sam']};{link_esc};"
+                f"{ok_str};{r['upload_date']};{reason_esc}\n"
+            )
     print(f"💾 CSV (недавно готово): {path}")
 
 
@@ -512,9 +555,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6f8; color: #1a1d24; padding: 24px; line-height: 1.5; }
-  .container { max-width: 1080px; margin: 0 auto; }
+  .container { max-width: 1120px; margin: 0 auto; }
   h1 { font-size: 24px; margin-bottom: 4px; }
-  h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; }
+  h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge-count {
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
@@ -588,6 +631,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
   tr.row-broken td { background: #fef2f2; }
+  td.upload-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.upload-date.bad { color: #dc2626; font-weight: 600; }
+  td.upload-date.unknown { color: #9ca3af; }
 
   .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
 
@@ -609,7 +655,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="stat pending">  <div class="value" id="pending">0</div>  <div class="label">Ожидают</div></div>
     <div class="stat priority"> <div class="value" id="prio">0</div>     <div class="label">Приоритет · Новый ЦФЗ</div></div>
     <div class="stat recently"> <div class="value" id="recently">0</div> <div class="label">Недавно готово</div></div>
-    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых ссылок</div></div>
+    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых</div></div>
     <div class="stat">          <div class="value" id="percent">0%</div> <div class="label">Готово (активные)</div></div>
   </div>
 
@@ -642,9 +688,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <table>
       <thead><tr>
         <th style="width:70px;text-align:center">#</th>
-        <th style="width:120px">Дата готовности</th>
+        <th style="width:110px">Готово</th>
         <th>Название</th>
-        <th style="width:180px">Ссылка</th>
+        <th style="width:150px">Дата загрузки</th>
+        <th style="width:200px">Ссылка</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -665,10 +712,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
 
-  const brokenTotal = DATA.recently_done.filter(r => !r.link_ok && r.link).length;
-  const brokenEl = document.getElementById('broken');
+  const brokenTotal = DATA.recently_done.filter(r => r.in_invalid_month || (!r.link_ok && r.link)).length;
+  document.getElementById('broken').textContent = brokenTotal;
   const brokenBadge = document.getElementById('brokenCount');
-  brokenEl.textContent = brokenTotal;
   if (brokenTotal > 0) {
     brokenBadge.textContent = 'битых: ' + brokenTotal;
     brokenBadge.style.display = 'inline-block';
@@ -695,9 +741,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   // ---- Недавно готово ----
   const rbody = document.getElementById('recentlyBody');
   DATA.recently_done.forEach(r => {
-    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет ссылки</span>';
+    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет</span>';
     if (r.link) {
-      if (r.link_ok) {
+      if (r.in_invalid_month) {
+        linkCell =
+          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
+          '<span class="link-status broken"><span class="dot"></span>' + r.link_reason + '</span>';
+      } else if (r.link_ok) {
         linkCell =
           '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
           '<span class="link-status ok"><span class="dot"></span>ok</span>';
@@ -707,12 +757,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           '<span class="link-status broken"><span class="dot"></span>' + (r.link_reason || 'битая') + '</span>';
       }
     }
+
+    let dateCell;
+    if (!r.upload_date) {
+      dateCell = '<td class="upload-date unknown">—</td>';
+    } else if (r.in_invalid_month) {
+      dateCell = '<td class="upload-date bad">' + r.upload_date + '</td>';
+    } else {
+      dateCell = '<td class="upload-date">' + r.upload_date + '</td>';
+    }
+
     const tr = document.createElement('tr');
-    if (r.link && !r.link_ok) tr.className = 'row-broken';
+    if (r.link && (!r.link_ok || r.in_invalid_month)) tr.className = 'row-broken';
     tr.innerHTML =
       '<td class="num">' + r.num + '</td>' +
       '<td>' + r.date + '</td>' +
       '<td>' + r.sam + '</td>' +
+      dateCell +
       '<td>' + linkCell + '</td>';
     rbody.appendChild(tr);
   });
@@ -754,14 +815,16 @@ def generate_html(active_data, recently_rows, since_dt, path):
 
     recently_payload = [
         {
-            "num": num,
-            "date": date,
-            "sam": sam,
-            "link": link,
-            "link_ok": bool(link_ok),
-            "link_reason": link_reason,
+            "num": r["num"],
+            "date": r["date"],
+            "sam": r["sam"],
+            "link": r["link"],
+            "link_ok": bool(r["ok"]),
+            "link_reason": r["reason"],
+            "upload_date": r["upload_date"],
+            "in_invalid_month": r["in_invalid_month"],
         }
-        for num, date, sam, link, link_ok, link_reason in recently_rows
+        for r in recently_rows
     ]
 
     payload = {
@@ -798,30 +861,35 @@ if __name__ == "__main__":
     print(f"\n=== Фильтр «Недавно готово» (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}) ===")
     recently_filtered, dropped = filter_recently_by_date(recently_raw, RECENTLY_SINCE)
     print(f"   всего в таблице: {len(recently_raw)}, "
-          f"попало под фильтр: {len(recently_filtered)}, отброшено: {dropped}")
+          f"попало: {len(recently_filtered)}, отброшено: {dropped}")
 
-    # --- Проверка ссылок ---
-    if LINK_CHECK_ENABLED and recently_filtered:
-        urls = [row[3] for row in recently_filtered if row[3]]
+    # --- Проверка ссылок и дат загрузки ---
+    if DATE_CHECK_ENABLED and recently_filtered:
+        urls = list({row[3] for row in recently_filtered if row[3]})
         link_results = check_links_parallel(urls)
     else:
-        print("\n⏭ Проверка ссылок отключена (LINK_CHECK_ENABLED=false)")
+        print("\n⏭ Проверка ссылок отключена")
         link_results = {}
 
-    # Обогащаем recently_filtered: (num, date, sam, link, link_ok, link_reason, d)
+    # Обогащаем recently_filtered
     recently_enriched = []
     for num, date, sam, link, d in recently_filtered:
         if not link:
-            ok, reason = False, "нет ссылки"
+            ok, reason, upload_date, in_invalid = False, "нет ссылки", "", False
         elif link in link_results:
-            ok, reason = link_results[link]
+            ok, reason, upload_date, in_invalid = link_results[link]
         else:
-            ok, reason = False, "не проверялась"
-        recently_enriched.append((num, date, sam, link, ok, reason, d))
+            ok, reason, upload_date, in_invalid = False, "не проверялась", "", False
 
-    # Сортируем по дате — свежие сверху
-    recently_enriched.sort(key=lambda r: r[6], reverse=True)
-    recently_out = [(r[0], r[1], r[2], r[3], r[4], r[5]) for r in recently_enriched]
+        recently_enriched.append({
+            "num": num, "date": date, "sam": sam, "link": link,
+            "ok": ok, "reason": reason,
+            "upload_date": upload_date, "in_invalid_month": in_invalid,
+            "dt": d,
+        })
+
+    recently_enriched.sort(key=lambda r: r["dt"], reverse=True)
+    recently_out = recently_enriched
 
     # --- Сохранение ---
     save_active_csv(active_data, OUTPUT_CSV)
@@ -841,7 +909,8 @@ if __name__ == "__main__":
     percent = round(done * 100 / total) if total else 0
     prio    = sum(1 for r in active_data
                   if r[3] == "pending" and PRIORITY_REASON.lower() in r[4].lower())
-    broken  = sum(1 for r in recently_out if r[3] and not r[4])
+    broken_date = sum(1 for r in recently_out if r["in_invalid_month"])
+    broken_link = sum(1 for r in recently_out if r["link"] and not r["ok"] and not r["in_invalid_month"])
 
     print()
     print("=" * 55)
@@ -850,5 +919,6 @@ if __name__ == "__main__":
     print(f"🔴 Ожидают: {pending}")
     print(f"🟡 Приоритет (Новый ЦФЗ): {prio}")
     print(f"🔵 Недавно готово (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}): {len(recently_out)}")
-    print(f"❌ Битых ссылок: {broken}")
+    print(f"❌ Загружено в {INVALID_UPLOAD_MONTH:02d}.{INVALID_UPLOAD_YEAR}: {broken_date}")
+    print(f"❌ Битых ссылок (прочее): {broken_link}")
     print("=" * 55)
