@@ -5,8 +5,6 @@ import base64
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- WINDOWS: кодировка консоли ----------
 if sys.platform == "win32":
@@ -29,8 +27,6 @@ RECENTLY_CSV = os.path.join(OUTPUT_DIR, "recently_done.csv")
 OUTPUT_HTML  = os.path.join(OUTPUT_DIR, "dashboard.html")
 DEBUG_HTML   = os.path.join(OUTPUT_DIR, "_debug_page.html")
 
-PRIORITY_REASON = "Новый ЦФЗ"
-
 UA_STRING = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
@@ -39,7 +35,6 @@ UA_STRING = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
 def _parse_since(value: str) -> datetime:
     """
     Формат: "DD.MM.YYYY" или "MM.YYYY" или "YYYY".
-    Примеры:
       "01.11.2025" -> 1 ноября 2025
       "11.2025"    -> 1 ноября 2025
       "2025"       -> 1 января 2025
@@ -62,22 +57,12 @@ RECENTLY_SINCE = _parse_since(
     os.getenv("RECENTLY_SINCE", f"11.{datetime.now().year}")
 )
 
-# ---------- ПРОВЕРКА ДАТЫ ЗАГРУЗКИ ----------
-INVALID_UPLOAD_MONTH = int(os.getenv("INVALID_UPLOAD_MONTH", "11"))
-INVALID_UPLOAD_YEAR  = int(os.getenv("INVALID_UPLOAD_YEAR", str(datetime.now().year)))
-
-LINK_CHECK_TIMEOUT = int(os.getenv("LINK_CHECK_TIMEOUT", "15"))
-LINK_CHECK_WORKERS = int(os.getenv("LINK_CHECK_WORKERS", "6"))
-DATE_CHECK_ENABLED = os.getenv("DATE_CHECK_ENABLED", "true").lower() == "true"
-
 # ---------- НАСТРОЙКИ GITHUB ----------
 GITHUB_TOKEN     = os.getenv("GITHUB_TOKEN", "")
 GITHUB_USERNAME  = os.getenv("GITHUB_USERNAME", "SpritePetrovich")
 GITHUB_REPO      = os.getenv("GITHUB_REPO", "monitoring-dashboard")
 GITHUB_FILE_PATH = "index.html"
 GITHUB_BRANCH    = os.getenv("GITHUB_BRANCH", "main")
-
-YANDEX_PUBLIC_API = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 
 # =========================================================
@@ -165,140 +150,6 @@ def github_upload_dashboard(local_html_path):
     else:
         gh_log(f"❌ Ошибка загрузки: {r.status_code} {r.text[:300]}")
     return False
-
-
-# =========================================================
-# ============== ПРОВЕРКА ССЫЛОК И ДАТ ====================
-# =========================================================
-def _get_upload_date(url: str, timeout: int):
-    """Возвращает (date: datetime | None, reason: str)."""
-    try:
-        r = requests.get(
-            YANDEX_PUBLIC_API,
-            params={"public_key": url, "path": "/"},
-            timeout=timeout,
-            headers={"User-Agent": UA_STRING, "Accept": "application/json"},
-        )
-    except requests.exceptions.Timeout:
-        return None, "таймаут API"
-    except requests.exceptions.ConnectionError:
-        return None, "сеть (API)"
-    except Exception as e:
-        return None, f"API: {type(e).__name__}"
-
-    if r.status_code != 200:
-        return None, f"API HTTP {r.status_code}"
-
-    try:
-        j = r.json()
-    except Exception:
-        return None, "API: не JSON"
-
-    if j.get("type") == "file":
-        raw = j.get("created") or j.get("modified")
-        if not raw:
-            return None, "API: нет даты"
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")), "ok"
-        except Exception:
-            return None, "API: дата не парсится"
-
-    if j.get("type") == "dir":
-        return None, "ссылка на папку"
-
-    if "_embedded" in j:
-        items = j["_embedded"].get("items", [])
-        if items:
-            raw = items[0].get("created") or items[0].get("modified")
-            if raw:
-                try:
-                    return datetime.fromisoformat(raw.replace("Z", "+00:00")), "ok"
-                except Exception:
-                    pass
-
-    return None, "API: неизвестная структура"
-
-
-def check_link(url: str, timeout: int = LINK_CHECK_TIMEOUT):
-    """
-    Возвращает (ok, reason, upload_date_str, in_invalid_month).
-    ok=True -> ссылка живая И дата загрузки не в запрещённом месяце
-    """
-    if not url:
-        return False, "нет ссылки", "", False
-    if not url.startswith(("http://", "https://")):
-        return False, "некорректный URL", "", False
-
-    # 1) Проверка живости (HEAD, потом GET)
-    alive = False
-    try:
-        r = requests.head(url, timeout=timeout, allow_redirects=True,
-                          headers={"User-Agent": UA_STRING})
-        alive = r.status_code == 200
-    except Exception:
-        try:
-            r = requests.get(url, timeout=timeout, allow_redirects=True,
-                             stream=True, headers={"User-Agent": UA_STRING})
-            alive = r.status_code == 200
-            try:
-                r.close()
-            except Exception:
-                pass
-        except Exception:
-            alive = False
-
-    # 2) Проверка даты загрузки через публичный API
-    upload_dt, api_reason = (None, "выключено")
-    if DATE_CHECK_ENABLED:
-        upload_dt, api_reason = _get_upload_date(url, timeout)
-
-    if upload_dt is None:
-        if alive:
-            return True, "ok (дата неизвестна)", "", False
-        return False, api_reason or "недоступна", "", False
-
-    upload_str = upload_dt.strftime("%d.%m.%Y %H:%M")
-
-    in_invalid = (
-        upload_dt.month == INVALID_UPLOAD_MONTH
-        and upload_dt.year == INVALID_UPLOAD_YEAR
-    )
-
-    if in_invalid:
-        month_name = {
-            1: "январе", 2: "феврале", 3: "марте", 4: "апреле",
-            5: "мае", 6: "июне", 7: "июле", 8: "августе",
-            9: "сентябре", 10: "октябре", 11: "ноябре", 12: "декабре",
-        }[INVALID_UPLOAD_MONTH]
-        return False, f"загружено в {month_name} {INVALID_UPLOAD_YEAR}", upload_str, True
-
-    if not alive:
-        return False, "файл недоступен", upload_str, False
-
-    return True, "ok", upload_str, False
-
-
-def check_links_parallel(urls: list) -> dict:
-    """Возвращает {url: (ok, reason, upload_date_str, in_invalid_month)}."""
-    result = {}
-    if not urls:
-        return result
-
-    print(f"\n=== Проверка {len(urls)} ссылок (потоков: {LINK_CHECK_WORKERS}) ===")
-    with ThreadPoolExecutor(max_workers=LINK_CHECK_WORKERS) as ex:
-        futures = {ex.submit(check_link, u): u for u in urls}
-        for i, f in enumerate(as_completed(futures), 1):
-            url = futures[f]
-            try:
-                ok, reason, upload_date, in_invalid = f.result()
-            except Exception as e:
-                ok, reason, upload_date, in_invalid = (
-                    False, f"исключение: {type(e).__name__}", "", False
-                )
-            result[url] = (ok, reason, upload_date, in_invalid)
-            icon = "❌" if (not ok or in_invalid) else "✅"
-            print(f"   [{i}/{len(urls)}] {icon} {reason:<45} {upload_date:<18} {url[:65]}")
-    return result
 
 
 # =========================================================
@@ -527,18 +378,13 @@ def save_active_csv(data, path):
 
 
 def save_recently_csv(rows, path):
-    """rows: список dict (recently_enriched)."""
+    """rows: [(num, date, sam, link, dt), ...]"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;date_done;sam;link;link_ok;upload_date;status\n")
-        for r in rows:
-            ok_str = "ok" if r["ok"] else "broken"
-            link_esc = (r["link"] or "").replace(";", "%3B")
-            reason_esc = (r["reason"] or "").replace(";", ",")
-            f.write(
-                f"{r['num']};{r['date']};{r['sam']};{link_esc};"
-                f"{ok_str};{r['upload_date']};{reason_esc}\n"
-            )
+        f.write("num;date_done;sam;link\n")
+        for num, date, sam, link, _ in rows:
+            link_esc = (link or "").replace(";", "%3B")
+            f.write(f"{num};{date};{sam};{link_esc}\n")
     print(f"💾 CSV (недавно готово): {path}")
 
 
@@ -555,37 +401,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6f8; color: #1a1d24; padding: 24px; line-height: 1.5; }
-  .container { max-width: 1120px; margin: 0 auto; }
+  .container { max-width: 980px; margin: 0 auto; }
   h1 { font-size: 24px; margin-bottom: 4px; }
   h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge-count {
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
   }
-  .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
            gap: 12px; margin-bottom: 24px; }
-  .stat { background: #fff; border-radius: 12px; padding: 18px;
+  .stat { background: #fff; border-radius: 12px; padding: 24px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
-  .stat .value { font-size: 32px; font-weight: 700; }
-  .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
-  .stat.done     .value { color: #16a34a; }
-  .stat.pending  .value { color: #dc2626; }
-  .stat.priority { background: #fef3c7; border: 1px solid #fcd34d; }
-  .stat.priority .value { color: #b45309; }
-  .stat.priority .label { color: #92400e; font-weight: 600; }
+  .stat .value { font-size: 44px; font-weight: 700; }
+  .stat .label { font-size: 13px; color: #6b7280; margin-top: 6px; }
+  .stat.active   .value { color: #dc2626; }
   .stat.recently .value { color: #2563eb; }
-  .stat.broken   .value { color: #dc2626; }
-
-  .progress-wrap { background: #fff; border-radius: 12px; padding: 16px 20px;
-                   margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-  .progress-header { display: flex; justify-content: space-between; font-size: 13px;
-                     color: #6b7280; margin-bottom: 8px; }
-  .progress { height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
-  .progress-bar { height: 100%; background: linear-gradient(90deg, #16a34a, #22c55e);
-                  border-radius: 5px; transition: width 0.6s ease; }
 
   table { width: 100%; border-collapse: collapse; background: #fff;
           border-radius: 12px; overflow: hidden;
@@ -594,52 +426,21 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   th { background: #fafafa; font-size: 12px; text-transform: uppercase;
        color: #6b7280; font-weight: 600; }
   tr:last-child td { border-bottom: none; }
-  td.num     { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
-  td.done    { color: #16a34a; font-weight: 600; text-align: center; }
-  td.pending { color: #dc2626; text-align: center; }
-
-  td.priority-cell { text-align: center; }
-  td.priority-cell .badge-priority {
-    display: inline-block; padding: 2px 10px; border-radius: 999px;
-    background: #fef3c7; color: #92400e; font-weight: 700; font-size: 13px;
-    border: 1px solid #fcd34d;
-  }
-  .bar-mini { display: inline-block; width: 60px; height: 6px; background: #e5e7eb;
-              border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
-  .bar-mini > div { height: 100%; background: #22c55e; }
-
-  .legend { font-size: 12px; color: #6b7280; margin-top: 8px; }
-  .legend .swatch { display: inline-block; width: 12px; height: 12px;
-                    background: #fef3c7; border: 1px solid #fcd34d;
-                    border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+  td.num { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
 
   a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
   a.file-link:hover { text-decoration: underline; }
-  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
-  a.file-link.broken:hover { text-decoration: line-through underline; }
-
-  .link-status { display: inline-flex; align-items: center; gap: 6px;
-                 font-size: 12px; font-weight: 600; }
-  .link-status.ok      { color: #16a34a; }
-  .link-status.broken  { color: #dc2626; }
-  .link-status.unknown { color: #9ca3af; }
-  .link-status .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .link-status.ok .dot      { background: #16a34a; }
-  .link-status.broken .dot  { background: #dc2626; }
-  .link-status.unknown .dot { background: #9ca3af; }
 
   .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
-  tr.row-broken td { background: #fef2f2; }
-  td.upload-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  td.upload-date.bad { color: #dc2626; font-weight: 600; }
-  td.upload-date.unknown { color: #9ca3af; }
-
   .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
+  .empty { padding: 24px; text-align: center; color: #9ca3af;
+           background: #fff; border-radius: 12px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 
   @media (max-width: 500px) {
     body { padding: 12px; }
-    .stat .value { font-size: 24px; }
+    .stat .value { font-size: 32px; }
     th, td { padding: 8px 10px; font-size: 13px; }
   }
 </style>
@@ -650,48 +451,28 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="updated">Обновлено: <span id="updated"></span></div>
 
   <div class="stats">
-    <div class="stat">          <div class="value" id="total">0</div>    <div class="label">Всего активных</div></div>
-    <div class="stat done">     <div class="value" id="done">0</div>     <div class="label">На Диске</div></div>
-    <div class="stat pending">  <div class="value" id="pending">0</div>  <div class="label">Ожидают</div></div>
-    <div class="stat priority"> <div class="value" id="prio">0</div>     <div class="label">Приоритет · Новый ЦФЗ</div></div>
-    <div class="stat recently"> <div class="value" id="recently">0</div> <div class="label">Недавно готово</div></div>
-    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых</div></div>
-    <div class="stat">          <div class="value" id="percent">0%</div> <div class="label">Готово (активные)</div></div>
+    <div class="stat active">
+      <div class="value" id="total">0</div>
+      <div class="label">Активных заявок</div>
+    </div>
+    <div class="stat recently">
+      <div class="value" id="recently">0</div>
+      <div class="label">Готово с <span id="sinceDate"></span></div>
+    </div>
   </div>
-
-  <div class="progress-wrap">
-    <div class="progress-header"><span>Прогресс активных</span><span id="progressText">0 / 0</span></div>
-    <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
-  </div>
-
-  <h2>По городам</h2>
-  <table>
-    <thead><tr>
-      <th>Город</th>
-      <th style="text-align:center">Всего</th>
-      <th style="text-align:center">На Диске</th>
-      <th style="text-align:center">Ожидают</th>
-      <th style="text-align:center">Причина · Новый ЦФЗ</th>
-      <th>Прогресс</th>
-    </tr></thead>
-    <tbody id="cityBody"></tbody>
-  </table>
-  <div class="legend"><span class="swatch"></span>жёлтым отмечено количество заявок с причиной «Новый ЦФЗ» — они приоритетны к исполнению</div>
 
   <h2>
-    Недавно готово
+    Готовые заявки
     <span class="badge-count" id="recentlyCount">0</span>
-    <span class="badge-count red" id="brokenCount" style="display:none">битых: 0</span>
   </h2>
-  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate"></b></div>
+  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate2"></b></div>
   <div class="recently-wrap">
     <table>
       <thead><tr>
-        <th style="width:70px;text-align:center">#</th>
-        <th style="width:110px">Готово</th>
+        <th style="width:80px;text-align:center">#</th>
+        <th style="width:130px">Готово</th>
         <th>Название</th>
-        <th style="width:150px">Дата загрузки</th>
-        <th style="width:200px">Ссылка</th>
+        <th style="width:130px;text-align:center">Ссылка</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -702,136 +483,45 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   const DATA = __DATA__;
   document.getElementById('updated').textContent       = DATA.updated;
   document.getElementById('total').textContent         = DATA.total;
-  document.getElementById('done').textContent          = DATA.done;
-  document.getElementById('pending').textContent       = DATA.pending;
-  document.getElementById('prio').textContent          = DATA.priority_total;
-  document.getElementById('percent').textContent       = DATA.percent + '%';
-  document.getElementById('progressText').textContent  = DATA.done + ' / ' + DATA.total;
-  document.getElementById('progressBar').style.width   = DATA.percent + '%';
   document.getElementById('recently').textContent      = DATA.recently_total;
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
+  document.getElementById('sinceDate2').textContent    = DATA.since_date;
 
-  const brokenTotal = DATA.recently_done.filter(r => r.in_invalid_month || (!r.link_ok && r.link)).length;
-  document.getElementById('broken').textContent = brokenTotal;
-  const brokenBadge = document.getElementById('brokenCount');
-  if (brokenTotal > 0) {
-    brokenBadge.textContent = 'битых: ' + brokenTotal;
-    brokenBadge.style.display = 'inline-block';
-  }
-
-  // ---- По городам ----
-  const body = document.getElementById('cityBody');
-  DATA.cities.forEach(c => {
-    const pct = c.total ? Math.round(c.done / c.total * 100) : 0;
-    const prioCell = c.priority > 0
-      ? '<span class="badge-priority">' + c.priority + '</span>'
-      : '<span style="color:#9ca3af">—</span>';
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + c.city + '</td>' +
-      '<td class="num">' + c.total + '</td>' +
-      '<td class="done">' + c.done + '</td>' +
-      '<td class="' + (c.pending > 0 ? 'pending' : 'num') + '">' + c.pending + '</td>' +
-      '<td class="priority-cell">' + prioCell + '</td>' +
-      '<td><span class="bar-mini"><div style="width:' + pct + '%"></div></span>' + pct + '%</td>';
-    body.appendChild(tr);
-  });
-
-  // ---- Недавно готово ----
   const rbody = document.getElementById('recentlyBody');
-  DATA.recently_done.forEach(r => {
-    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет</span>';
-    if (r.link) {
-      if (r.in_invalid_month) {
-        linkCell =
-          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status broken"><span class="dot"></span>' + r.link_reason + '</span>';
-      } else if (r.link_ok) {
-        linkCell =
-          '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status ok"><span class="dot"></span>ok</span>';
-      } else {
-        linkCell =
-          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status broken"><span class="dot"></span>' + (r.link_reason || 'битая') + '</span>';
-      }
-    }
-
-    let dateCell;
-    if (!r.upload_date) {
-      dateCell = '<td class="upload-date unknown">—</td>';
-    } else if (r.in_invalid_month) {
-      dateCell = '<td class="upload-date bad">' + r.upload_date + '</td>';
-    } else {
-      dateCell = '<td class="upload-date">' + r.upload_date + '</td>';
-    }
-
+  if (DATA.recently_done.length === 0) {
     const tr = document.createElement('tr');
-    if (r.link && (!r.link_ok || r.in_invalid_month)) tr.className = 'row-broken';
-    tr.innerHTML =
-      '<td class="num">' + r.num + '</td>' +
-      '<td>' + r.date + '</td>' +
-      '<td>' + r.sam + '</td>' +
-      dateCell +
-      '<td>' + linkCell + '</td>';
+    tr.innerHTML = '<td colspan="4" class="empty">Нет готовых заявок с ' + DATA.since_date + '</td>';
     rbody.appendChild(tr);
-  });
+  } else {
+    DATA.recently_done.forEach(r => {
+      const linkCell = r.link
+        ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
+        : '<span style="color:#9ca3af">—</span>';
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="num">' + r.num + '</td>' +
+        '<td>' + r.date + '</td>' +
+        '<td>' + r.sam + '</td>' +
+        '<td style="text-align:center">' + linkCell + '</td>';
+      rbody.appendChild(tr);
+    });
+  }
 </script>
 </body>
 </html>
 """
 
 
-def generate_html(active_data, recently_rows, since_dt, path):
-    total   = len(active_data)
-    done    = sum(1 for r in active_data if r[3] == "done")
-    pending = total - done
-    percent = round(done * 100 / total) if total else 0
-
-    def is_priority(reason, status):
-        return status == "pending" and PRIORITY_REASON.lower() in reason.lower()
-
-    priority_total = sum(1 for r in active_data if is_priority(r[4], r[3]))
-
-    by_city = defaultdict(lambda: {"total": 0, "done": 0, "priority": 0})
-    for _, city, _, status, reason in active_data:
-        by_city[city]["total"] += 1
-        if status == "done":
-            by_city[city]["done"] += 1
-        if is_priority(reason, status):
-            by_city[city]["priority"] += 1
-
-    cities = [
-        {
-            "city": c,
-            "total": v["total"],
-            "done": v["done"],
-            "pending": v["total"] - v["done"],
-            "priority": v["priority"],
-        }
-        for c, v in sorted(by_city.items())
-    ]
-
+def generate_html(active_total, recently_rows, since_dt, path):
     recently_payload = [
-        {
-            "num": r["num"],
-            "date": r["date"],
-            "sam": r["sam"],
-            "link": r["link"],
-            "link_ok": bool(r["ok"]),
-            "link_reason": r["reason"],
-            "upload_date": r["upload_date"],
-            "in_invalid_month": r["in_invalid_month"],
-        }
-        for r in recently_rows
+        {"num": num, "date": date, "sam": sam, "link": link}
+        for num, date, sam, link, _ in recently_rows
     ]
 
     payload = {
-        "total": total, "done": done, "pending": pending, "percent": percent,
-        "priority_total": priority_total,
+        "total": active_total,
         "recently_total": len(recently_rows),
-        "cities": cities,
         "recently_done": recently_payload,
         "since_date": since_dt.strftime("%d.%m.%Y"),
         "updated": datetime.now().strftime("%d.%m.%Y %H:%M"),
@@ -863,38 +553,13 @@ if __name__ == "__main__":
     print(f"   всего в таблице: {len(recently_raw)}, "
           f"попало: {len(recently_filtered)}, отброшено: {dropped}")
 
-    # --- Проверка ссылок и дат загрузки ---
-    if DATE_CHECK_ENABLED and recently_filtered:
-        urls = list({row[3] for row in recently_filtered if row[3]})
-        link_results = check_links_parallel(urls)
-    else:
-        print("\n⏭ Проверка ссылок отключена")
-        link_results = {}
-
-    # Обогащаем recently_filtered
-    recently_enriched = []
-    for num, date, sam, link, d in recently_filtered:
-        if not link:
-            ok, reason, upload_date, in_invalid = False, "нет ссылки", "", False
-        elif link in link_results:
-            ok, reason, upload_date, in_invalid = link_results[link]
-        else:
-            ok, reason, upload_date, in_invalid = False, "не проверялась", "", False
-
-        recently_enriched.append({
-            "num": num, "date": date, "sam": sam, "link": link,
-            "ok": ok, "reason": reason,
-            "upload_date": upload_date, "in_invalid_month": in_invalid,
-            "dt": d,
-        })
-
-    recently_enriched.sort(key=lambda r: r["dt"], reverse=True)
-    recently_out = recently_enriched
+    # Свежие сверху
+    recently_filtered.sort(key=lambda r: r[4], reverse=True)
 
     # --- Сохранение ---
     save_active_csv(active_data, OUTPUT_CSV)
-    save_recently_csv(recently_out, RECENTLY_CSV)
-    generate_html(active_data, recently_out, RECENTLY_SINCE, OUTPUT_HTML)
+    save_recently_csv(recently_filtered, RECENTLY_CSV)
+    generate_html(len(active_data), recently_filtered, RECENTLY_SINCE, OUTPUT_HTML)
 
     # --- Выгрузка на GitHub ---
     try:
@@ -903,22 +568,8 @@ if __name__ == "__main__":
         gh_log(f"❌ Синхронизация с GitHub упала: {e}")
 
     # --- Итоги ---
-    total   = len(active_data)
-    done    = sum(1 for r in active_data if r[3] == "done")
-    pending = total - done
-    percent = round(done * 100 / total) if total else 0
-    prio    = sum(1 for r in active_data
-                  if r[3] == "pending" and PRIORITY_REASON.lower() in r[4].lower())
-    broken_date = sum(1 for r in recently_out if r["in_invalid_month"])
-    broken_link = sum(1 for r in recently_out if r["link"] and not r["ok"] and not r["in_invalid_month"])
-
     print()
     print("=" * 55)
-    print(f"✅ Активных: {total}")
-    print(f"🟢 На Диске: {done} ({percent}%)")
-    print(f"🔴 Ожидают: {pending}")
-    print(f"🟡 Приоритет (Новый ЦФЗ): {prio}")
-    print(f"🔵 Недавно готово (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}): {len(recently_out)}")
-    print(f"❌ Загружено в {INVALID_UPLOAD_MONTH:02d}.{INVALID_UPLOAD_YEAR}: {broken_date}")
-    print(f"❌ Битых ссылок (прочее): {broken_link}")
+    print(f"✅ Активных: {len(active_data)}")
+    print(f"🔵 Готово с {RECENTLY_SINCE.strftime('%d.%m.%Y')}: {len(recently_filtered)}")
     print("=" * 55)
