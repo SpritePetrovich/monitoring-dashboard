@@ -8,37 +8,23 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6f8; color: #1a1d24; padding: 24px; line-height: 1.5; }
-  .container { max-width: 1120px; margin: 0 auto; }
+  .container { max-width: 980px; margin: 0 auto; }
   h1 { font-size: 24px; margin-bottom: 4px; }
   h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge-count {
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
   }
-  .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
            gap: 12px; margin-bottom: 24px; }
-  .stat { background: #fff; border-radius: 12px; padding: 18px;
+  .stat { background: #fff; border-radius: 12px; padding: 24px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
-  .stat .value { font-size: 32px; font-weight: 700; }
-  .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
-  .stat.done     .value { color: #16a34a; }
-  .stat.pending  .value { color: #dc2626; }
-  .stat.priority { background: #fef3c7; border: 1px solid #fcd34d; }
-  .stat.priority .value { color: #b45309; }
-  .stat.priority .label { color: #92400e; font-weight: 600; }
+  .stat .value { font-size: 44px; font-weight: 700; }
+  .stat .label { font-size: 13px; color: #6b7280; margin-top: 6px; }
+  .stat.active   .value { color: #dc2626; }
   .stat.recently .value { color: #2563eb; }
-  .stat.broken   .value { color: #dc2626; }
-
-  .progress-wrap { background: #fff; border-radius: 12px; padding: 16px 20px;
-                   margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-  .progress-header { display: flex; justify-content: space-between; font-size: 13px;
-                     color: #6b7280; margin-bottom: 8px; }
-  .progress { height: 10px; background: #e5e7eb; border-radius: 5px; overflow: hidden; }
-  .progress-bar { height: 100%; background: linear-gradient(90deg, #16a34a, #22c55e);
-                  border-radius: 5px; transition: width 0.6s ease; }
 
   table { width: 100%; border-collapse: collapse; background: #fff;
           border-radius: 12px; overflow: hidden;
@@ -47,52 +33,21 @@
   th { background: #fafafa; font-size: 12px; text-transform: uppercase;
        color: #6b7280; font-weight: 600; }
   tr:last-child td { border-bottom: none; }
-  td.num     { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
-  td.done    { color: #16a34a; font-weight: 600; text-align: center; }
-  td.pending { color: #dc2626; text-align: center; }
-
-  td.priority-cell { text-align: center; }
-  td.priority-cell .badge-priority {
-    display: inline-block; padding: 2px 10px; border-radius: 999px;
-    background: #fef3c7; color: #92400e; font-weight: 700; font-size: 13px;
-    border: 1px solid #fcd34d;
-  }
-  .bar-mini { display: inline-block; width: 60px; height: 6px; background: #e5e7eb;
-              border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
-  .bar-mini > div { height: 100%; background: #22c55e; }
-
-  .legend { font-size: 12px; color: #6b7280; margin-top: 8px; }
-  .legend .swatch { display: inline-block; width: 12px; height: 12px;
-                    background: #fef3c7; border: 1px solid #fcd34d;
-                    border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+  td.num { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
 
   a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
   a.file-link:hover { text-decoration: underline; }
-  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
-  a.file-link.broken:hover { text-decoration: line-through underline; }
-
-  .link-status { display: inline-flex; align-items: center; gap: 6px;
-                 font-size: 12px; font-weight: 600; }
-  .link-status.ok      { color: #16a34a; }
-  .link-status.broken  { color: #dc2626; }
-  .link-status.unknown { color: #9ca3af; }
-  .link-status .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .link-status.ok .dot      { background: #16a34a; }
-  .link-status.broken .dot  { background: #dc2626; }
-  .link-status.unknown .dot { background: #9ca3af; }
 
   .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
-  tr.row-broken td { background: #fef2f2; }
-  td.upload-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  td.upload-date.bad { color: #dc2626; font-weight: 600; }
-  td.upload-date.unknown { color: #9ca3af; }
-
   .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
+  .empty { padding: 24px; text-align: center; color: #9ca3af;
+           background: #fff; border-radius: 12px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
 
   @media (max-width: 500px) {
     body { padding: 12px; }
-    .stat .value { font-size: 24px; }
+    .stat .value { font-size: 32px; }
     th, td { padding: 8px 10px; font-size: 13px; }
   }
 </style>
@@ -103,48 +58,28 @@
   <div class="updated">Обновлено: <span id="updated"></span></div>
 
   <div class="stats">
-    <div class="stat">          <div class="value" id="total">0</div>    <div class="label">Всего активных</div></div>
-    <div class="stat done">     <div class="value" id="done">0</div>     <div class="label">На Диске</div></div>
-    <div class="stat pending">  <div class="value" id="pending">0</div>  <div class="label">Ожидают</div></div>
-    <div class="stat priority"> <div class="value" id="prio">0</div>     <div class="label">Приоритет · Новый ЦФЗ</div></div>
-    <div class="stat recently"> <div class="value" id="recently">0</div> <div class="label">Недавно готово</div></div>
-    <div class="stat broken">   <div class="value" id="broken">0</div>   <div class="label">Битых</div></div>
-    <div class="stat">          <div class="value" id="percent">0%</div> <div class="label">Готово (активные)</div></div>
+    <div class="stat active">
+      <div class="value" id="total">0</div>
+      <div class="label">Активных заявок</div>
+    </div>
+    <div class="stat recently">
+      <div class="value" id="recently">0</div>
+      <div class="label">Готово с <span id="sinceDate"></span></div>
+    </div>
   </div>
-
-  <div class="progress-wrap">
-    <div class="progress-header"><span>Прогресс активных</span><span id="progressText">0 / 0</span></div>
-    <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
-  </div>
-
-  <h2>По городам</h2>
-  <table>
-    <thead><tr>
-      <th>Город</th>
-      <th style="text-align:center">Всего</th>
-      <th style="text-align:center">На Диске</th>
-      <th style="text-align:center">Ожидают</th>
-      <th style="text-align:center">Причина · Новый ЦФЗ</th>
-      <th>Прогресс</th>
-    </tr></thead>
-    <tbody id="cityBody"></tbody>
-  </table>
-  <div class="legend"><span class="swatch"></span>жёлтым отмечено количество заявок с причиной «Новый ЦФЗ» — они приоритетны к исполнению</div>
 
   <h2>
-    Недавно готово
+    Готовые заявки
     <span class="badge-count" id="recentlyCount">0</span>
-    <span class="badge-count red" id="brokenCount" style="display:none">битых: 0</span>
   </h2>
-  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate"></b></div>
+  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate2"></b></div>
   <div class="recently-wrap">
     <table>
       <thead><tr>
-        <th style="width:70px;text-align:center">#</th>
-        <th style="width:110px">Готово</th>
+        <th style="width:80px;text-align:center">#</th>
+        <th style="width:130px">Готово</th>
         <th>Название</th>
-        <th style="width:150px">Дата загрузки</th>
-        <th style="width:200px">Ссылка</th>
+        <th style="width:130px;text-align:center">Ссылка</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -152,84 +87,33 @@
 </div>
 
 <script>
-  const DATA = {"total": 50, "done": 5, "pending": 45, "percent": 10, "priority_total": 1, "recently_total": 1, "cities": [{"city": "Альметьевск", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Волгоград", "total": 4, "done": 1, "pending": 3, "priority": 0}, {"city": "Ижевск", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Казань", "total": 3, "done": 0, "pending": 3, "priority": 0}, {"city": "Москва", "total": 3, "done": 0, "pending": 3, "priority": 1}, {"city": "Нижний Новгород", "total": 5, "done": 3, "pending": 2, "priority": 0}, {"city": "Новокузнецк", "total": 5, "done": 1, "pending": 4, "priority": 0}, {"city": "Пермь", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Санкт-Петербург", "total": 18, "done": 0, "pending": 18, "priority": 0}, {"city": "Саранск", "total": 2, "done": 0, "pending": 2, "priority": 0}, {"city": "Саратов", "total": 1, "done": 0, "pending": 1, "priority": 0}, {"city": "Сочи", "total": 4, "done": 0, "pending": 4, "priority": 0}], "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "link_ok": false, "link_reason": "загружено в ноябре 2026", "upload_date": "11.11.2026 21:09", "in_invalid_month": true}], "since_date": "01.11.2026", "updated": "12.11.2026 20:05"};
+  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ"}], "since_date": "01.11.2026", "updated": "12.11.2026 20:17"};
   document.getElementById('updated').textContent       = DATA.updated;
   document.getElementById('total').textContent         = DATA.total;
-  document.getElementById('done').textContent          = DATA.done;
-  document.getElementById('pending').textContent       = DATA.pending;
-  document.getElementById('prio').textContent          = DATA.priority_total;
-  document.getElementById('percent').textContent       = DATA.percent + '%';
-  document.getElementById('progressText').textContent  = DATA.done + ' / ' + DATA.total;
-  document.getElementById('progressBar').style.width   = DATA.percent + '%';
   document.getElementById('recently').textContent      = DATA.recently_total;
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
+  document.getElementById('sinceDate2').textContent    = DATA.since_date;
 
-  const brokenTotal = DATA.recently_done.filter(r => r.in_invalid_month || (!r.link_ok && r.link)).length;
-  document.getElementById('broken').textContent = brokenTotal;
-  const brokenBadge = document.getElementById('brokenCount');
-  if (brokenTotal > 0) {
-    brokenBadge.textContent = 'битых: ' + brokenTotal;
-    brokenBadge.style.display = 'inline-block';
-  }
-
-  // ---- По городам ----
-  const body = document.getElementById('cityBody');
-  DATA.cities.forEach(c => {
-    const pct = c.total ? Math.round(c.done / c.total * 100) : 0;
-    const prioCell = c.priority > 0
-      ? '<span class="badge-priority">' + c.priority + '</span>'
-      : '<span style="color:#9ca3af">—</span>';
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + c.city + '</td>' +
-      '<td class="num">' + c.total + '</td>' +
-      '<td class="done">' + c.done + '</td>' +
-      '<td class="' + (c.pending > 0 ? 'pending' : 'num') + '">' + c.pending + '</td>' +
-      '<td class="priority-cell">' + prioCell + '</td>' +
-      '<td><span class="bar-mini"><div style="width:' + pct + '%"></div></span>' + pct + '%</td>';
-    body.appendChild(tr);
-  });
-
-  // ---- Недавно готово ----
   const rbody = document.getElementById('recentlyBody');
-  DATA.recently_done.forEach(r => {
-    let linkCell = '<span class="link-status unknown"><span class="dot"></span>нет</span>';
-    if (r.link) {
-      if (r.in_invalid_month) {
-        linkCell =
-          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status broken"><span class="dot"></span>' + r.link_reason + '</span>';
-      } else if (r.link_ok) {
-        linkCell =
-          '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status ok"><span class="dot"></span>ok</span>';
-      } else {
-        linkCell =
-          '<a class="file-link broken" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a> ' +
-          '<span class="link-status broken"><span class="dot"></span>' + (r.link_reason || 'битая') + '</span>';
-      }
-    }
-
-    let dateCell;
-    if (!r.upload_date) {
-      dateCell = '<td class="upload-date unknown">—</td>';
-    } else if (r.in_invalid_month) {
-      dateCell = '<td class="upload-date bad">' + r.upload_date + '</td>';
-    } else {
-      dateCell = '<td class="upload-date">' + r.upload_date + '</td>';
-    }
-
+  if (DATA.recently_done.length === 0) {
     const tr = document.createElement('tr');
-    if (r.link && (!r.link_ok || r.in_invalid_month)) tr.className = 'row-broken';
-    tr.innerHTML =
-      '<td class="num">' + r.num + '</td>' +
-      '<td>' + r.date + '</td>' +
-      '<td>' + r.sam + '</td>' +
-      dateCell +
-      '<td>' + linkCell + '</td>';
+    tr.innerHTML = '<td colspan="4" class="empty">Нет готовых заявок с ' + DATA.since_date + '</td>';
     rbody.appendChild(tr);
-  });
+  } else {
+    DATA.recently_done.forEach(r => {
+      const linkCell = r.link
+        ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
+        : '<span style="color:#9ca3af">—</span>';
+      const tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="num">' + r.num + '</td>' +
+        '<td>' + r.date + '</td>' +
+        '<td>' + r.sam + '</td>' +
+        '<td style="text-align:center">' + linkCell + '</td>';
+      rbody.appendChild(tr);
+    });
+  }
 </script>
 </body>
 </html>
