@@ -18,11 +18,11 @@
   .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
            gap: 12px; margin-bottom: 24px; }
   .stat { background: #fff; border-radius: 12px; padding: 20px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
-  .stat .value { font-size: 38px; font-weight: 700; }
+  .stat .value { font-size: 36px; font-weight: 700; }
   .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
   .stat.active   .value { color: #dc2626; }
   .stat.recently .value { color: #2563eb; }
@@ -56,8 +56,8 @@
   .status.unknown     { color: #9ca3af; }
 
   tr.row-broken td { background: #fef2f2; }
-  .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
-  .recently-wrap table { box-shadow: none; }
+  .scroll-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
+  .scroll-wrap table { box-shadow: none; }
   .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
   .empty { padding: 24px; text-align: center; color: #9ca3af;
            background: #fff; border-radius: 12px;
@@ -80,31 +80,60 @@
       <div class="value" id="total">0</div>
       <div class="label">Активных заявок</div>
     </div>
+    <div class="stat ok">
+      <div class="value" id="activeOk">0</div>
+      <div class="label">Активных с файлом</div>
+    </div>
+    <div class="stat broken">
+      <div class="value" id="activeProblems">0</div>
+      <div class="label">Активных с проблемой</div>
+    </div>
     <div class="stat recently">
       <div class="value" id="recently">0</div>
       <div class="label">Готово с <span id="sinceDate"></span></div>
     </div>
     <div class="stat ok">
-      <div class="value" id="okCount">0</div>
+      <div class="value" id="recentOk">0</div>
       <div class="label">Актуальных файлов</div>
     </div>
     <div class="stat broken">
-      <div class="value" id="broken">0</div>
-      <div class="label">Проблемных</div>
+      <div class="value" id="recentProblems">0</div>
+      <div class="label">Проблемных готовых</div>
     </div>
+  </div>
+
+  <h2>
+    Активные заявки со ссылкой в «Карта»
+    <span class="badge-count" id="activeLinkCount">0</span>
+    <span class="badge-count red" id="activeBrokenBadge" style="display:none">проблемных: 0</span>
+  </h2>
+  <div class="since-info">
+    Проверяется, что файл по ссылке физически лежит в папке <b>maps/2026</b> на Яндекс.Диске.
+  </div>
+  <div class="scroll-wrap">
+    <table>
+      <thead><tr>
+        <th style="width:70px;text-align:center">#</th>
+        <th>Город</th>
+        <th>Название SAM</th>
+        <th style="width:160px">Файл в maps/2026</th>
+        <th style="width:220px">Статус</th>
+      </tr></thead>
+      <tbody id="activeBody"></tbody>
+    </table>
   </div>
 
   <h2>
     Готовые заявки
     <span class="badge-count" id="recentlyCount">0</span>
-    <span class="badge-count red" id="brokenCount" style="display:none">проблемных: 0</span>
+    <span class="badge-count red" id="recentBrokenBadge" style="display:none">проблемных: 0</span>
   </h2>
   <div class="since-info">
     Показаны заявки, готовые начиная с <b id="sinceDate2"></b>.
-    Актуальным считается файл, который есть в папке <b>maps/2026</b> на Яндекс.Диске и загружен
+    Актуальным считается файл, который есть в папке <b>maps/2026</b> и загружен
     не более чем за <b><span id="staleDays"></span></b> дн. до даты заявки.
   </div>
-  <div class="recently-wrap">
+  <div class="scroll-wrap">
     <table>
       <thead><tr>
         <th style="width:70px;text-align:center">#</th>
@@ -113,13 +142,13 @@
         <th style="width:160px">Файл в maps/2026</th>
         <th style="width:220px">Статус</th>
       </tr></thead>
-      <tbody id="recentlyBody"></tbody>
+      <tbody id="recentBody"></tbody>
     </table>
   </div>
 </div>
 
 <script>
-  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "file_dt": "11.11.2026 21:10", "status": "actual", "reason": "ok"}], "since_date": "01.11.2026", "stale_days": 7, "updated": "14.11.2026 19:10"};
+  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "file_dt": "11.11.2026 21:10", "status": "actual", "reason": "ok"}], "active_with_link": [{"num": "701", "city": "Волгоград", "sam": "Депутатская 15А", "link": "https://yadi.sk/i/MvCxkZWXwbZg0A", "status": "not_in_folder", "reason": "нет в папке maps/2026", "file_dt": null}, {"num": "680", "city": "Нижний Новгород", "sam": "НН Волжская наб 8к2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%92%D0%BE%D0%BB%D0%B6%D1%81%D0%BA%D0%B0%D1%8F%20%D0%BD%D0%B0%D0%B1%208%D0%BA2.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:07"}, {"num": "679", "city": "Нижний Новгород", "sam": "Мещерский б-р 5", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9C%D0%B5%D1%89%D0%B5%D1%80%D1%81%D0%BA%D0%B8%D0%B9%20%D0%B1-%D1%80%205.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:08"}, {"num": "678", "city": "Нижний Новгород", "sam": "Базарная 8", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%91%D0%B0%D0%B7%D0%B0%D1%80%D0%BD%D0%B0%D1%8F%208.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:07"}, {"num": "674", "city": "Новокузнецк", "sam": "НКЗ Ростовская 4", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%BE%D0%B2%D0%BE%D0%BA%D1%83%D0%B7%D0%BD%D0%B5%D1%86%D0%BA/%D0%9D%D0%9A%D0%97%20%D0%A0%D0%BE%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA%D0%B0%D1%8F%204.png", "status": "actual", "reason": "ok", "file_dt": "11.11.2026 21:10"}], "since_date": "01.11.2026", "stale_days": 7, "updated": "14.11.2026 20:53"};
 
   document.getElementById('updated').textContent       = DATA.updated;
   document.getElementById('total').textContent         = DATA.total;
@@ -128,58 +157,95 @@
   document.getElementById('sinceDate').textContent     = DATA.since_date;
   document.getElementById('sinceDate2').textContent    = DATA.since_date;
   document.getElementById('staleDays').textContent     = DATA.stale_days;
+  document.getElementById('activeLinkCount').textContent = DATA.active_with_link.length;
 
-  const problem = DATA.recently_done.filter(r =>
+  // ---- Активные: подсчёт ----
+  const activeOkCount = DATA.active_with_link.filter(r => r.status === 'actual').length;
+  const activeProblemCount = DATA.active_with_link.filter(r =>
+    r.status === 'not_in_folder' || r.status === 'link_broken'
+  ).length;
+  document.getElementById('activeOk').textContent = activeOkCount;
+  document.getElementById('activeProblems').textContent = activeProblemCount;
+  if (activeProblemCount > 0) {
+    const b = document.getElementById('activeBrokenBadge');
+    b.textContent = 'проблемных: ' + activeProblemCount;
+    b.style.display = 'inline-block';
+  }
+
+  // ---- Готовые: подсчёт ----
+  const recentOkCount = DATA.recently_done.filter(r => r.status === 'actual').length;
+  const recentProblemCount = DATA.recently_done.filter(r =>
     r.status === 'stale' || r.status === 'not_in_folder' || r.status === 'link_broken'
   ).length;
-  const okCount = DATA.recently_done.filter(r => r.status === 'actual').length;
-
-  document.getElementById('broken').textContent = problem;
-  document.getElementById('okCount').textContent = okCount;
-
-  const brokenBadge = document.getElementById('brokenCount');
-  if (problem > 0) {
-    brokenBadge.textContent = 'проблемных: ' + problem;
-    brokenBadge.style.display = 'inline-block';
+  document.getElementById('recentOk').textContent = recentOkCount;
+  document.getElementById('recentProblems').textContent = recentProblemCount;
+  if (recentProblemCount > 0) {
+    const b = document.getElementById('recentBrokenBadge');
+    b.textContent = 'проблемных: ' + recentProblemCount;
+    b.style.display = 'inline-block';
   }
 
   const STATUS_LABEL = {
-    actual:         {cls: 'ok',      text: 'актуален'},
-    stale:          {cls: 'bad',     text: 'устарел'},
-    not_in_folder:  {cls: 'bad',     text: 'нет в папке'},
-    link_broken:    {cls: 'bad',     text: 'ссылка битая'},
-    no_link:        {cls: 'unknown', text: 'нет ссылки'},
-    unknown:        {cls: 'unknown', text: 'не проверен'}
+    actual:        {cls: 'ok',      text: 'в папке'},
+    stale:         {cls: 'bad',     text: 'устарел'},
+    not_in_folder: {cls: 'bad',     text: 'нет в папке'},
+    link_broken:   {cls: 'bad',     text: 'ссылка битая'},
+    no_link:       {cls: 'unknown', text: 'нет ссылки'},
+    unknown:       {cls: 'unknown', text: 'не проверен'}
   };
 
-  const rbody = document.getElementById('recentlyBody');
+  function renderStatus(r) {
+    const st = STATUS_LABEL[r.status] || STATUS_LABEL.unknown;
+    let txt = st.text;
+    if (r.reason && r.status !== 'actual') txt += ' · ' + r.reason;
+    return '<span class="status ' + st.cls + '"><span class="dot"></span>' + txt + '</span>';
+  }
+
+  function renderDate(r) {
+    if (!r.file_dt) return '<td class="upload-date unknown">—</td>';
+    const cls = (r.status === 'stale' || r.status === 'not_in_folder') ? 'bad' : '';
+    return '<td class="upload-date ' + cls + '">' + r.file_dt + '</td>';
+  }
+
+  // ---- Таблица активных ----
+  const activeBody = document.getElementById('activeBody');
+  if (DATA.active_with_link.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="empty">Нет активных заявок со ссылкой в «Карта»</td>';
+    activeBody.appendChild(tr);
+  } else {
+    DATA.active_with_link.forEach(r => {
+      const tr = document.createElement('tr');
+      if (r.status === 'not_in_folder' || r.status === 'link_broken') tr.className = 'row-broken';
+      tr.innerHTML =
+        '<td class="num">' + r.num + '</td>' +
+        '<td>' + r.city + '</td>' +
+        '<td>' + r.sam + '</td>' +
+        renderDate(r) +
+        '<td>' + renderStatus(r) + '</td>';
+      activeBody.appendChild(tr);
+    });
+  }
+
+  // ---- Таблица готовых ----
+  const recentBody = document.getElementById('recentBody');
   if (DATA.recently_done.length === 0) {
     const tr = document.createElement('tr');
     tr.innerHTML = '<td colspan="5" class="empty">Нет готовых заявок с ' + DATA.since_date + '</td>';
-    rbody.appendChild(tr);
+    recentBody.appendChild(tr);
   } else {
     DATA.recently_done.forEach(r => {
-      const st = STATUS_LABEL[r.status] || STATUS_LABEL.unknown;
-      const statusCell =
-        '<span class="status ' + st.cls + '"><span class="dot"></span>' + st.text +
-        (r.reason && r.status !== 'actual' ? ' · ' + r.reason : '') + '</span>';
-
-      let dateCell;
-      if (!r.file_dt) {
-        dateCell = '<td class="upload-date unknown">—</td>';
-      } else {
-        dateCell = '<td class="upload-date ' + (st.cls === 'bad' ? 'bad' : '') + '">' + r.file_dt + '</td>';
-      }
-
       const tr = document.createElement('tr');
-      if (st.cls === 'bad') tr.className = 'row-broken';
+      if (r.status === 'stale' || r.status === 'not_in_folder' || r.status === 'link_broken') {
+        tr.className = 'row-broken';
+      }
       tr.innerHTML =
         '<td class="num">' + r.num + '</td>' +
         '<td>' + r.date + '</td>' +
         '<td>' + r.sam + '</td>' +
-        dateCell +
-        '<td>' + statusCell + '</td>';
-      rbody.appendChild(tr);
+        renderDate(r) +
+        '<td>' + renderStatus(r) + '</td>';
+      recentBody.appendChild(tr);
     });
   }
 </script>
