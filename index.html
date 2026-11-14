@@ -8,23 +8,26 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
          background: #f5f6f8; color: #1a1d24; padding: 24px; line-height: 1.5; }
-  .container { max-width: 980px; margin: 0 auto; }
+  .container { max-width: 1180px; margin: 0 auto; }
   h1 { font-size: 24px; margin-bottom: 4px; }
   h2 { font-size: 17px; margin: 28px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge-count {
     display: inline-block; padding: 2px 10px; border-radius: 999px;
     background: #e0e7ff; color: #3730a3; font-size: 12px; font-weight: 700;
   }
+  .badge-count.red { background: #fee2e2; color: #991b1b; }
   .updated { color: #6b7280; font-size: 13px; margin-bottom: 24px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
            gap: 12px; margin-bottom: 24px; }
-  .stat { background: #fff; border-radius: 12px; padding: 24px;
+  .stat { background: #fff; border-radius: 12px; padding: 20px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; }
-  .stat .value { font-size: 44px; font-weight: 700; }
-  .stat .label { font-size: 13px; color: #6b7280; margin-top: 6px; }
+  .stat .value { font-size: 38px; font-weight: 700; }
+  .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
   .stat.active   .value { color: #dc2626; }
   .stat.recently .value { color: #2563eb; }
+  .stat.broken   .value { color: #dc2626; }
+  .stat.ok       .value { color: #16a34a; }
 
   table { width: 100%; border-collapse: collapse; background: #fff;
           border-radius: 12px; overflow: hidden;
@@ -34,10 +37,25 @@
        color: #6b7280; font-weight: 600; }
   tr:last-child td { border-bottom: none; }
   td.num { text-align: center; font-variant-numeric: tabular-nums; color: #6b7280; }
+  td.upload-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.upload-date.bad { color: #dc2626; font-weight: 600; }
+  td.upload-date.unknown { color: #9ca3af; }
 
   a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
   a.file-link:hover { text-decoration: underline; }
+  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
 
+  .status { display: inline-flex; align-items: center; gap: 6px;
+            font-size: 12px; font-weight: 600; }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .status.ok .dot      { background: #16a34a; }
+  .status.ok          { color: #16a34a; }
+  .status.bad .dot     { background: #dc2626; }
+  .status.bad         { color: #dc2626; }
+  .status.unknown .dot { background: #9ca3af; }
+  .status.unknown     { color: #9ca3af; }
+
+  tr.row-broken td { background: #fef2f2; }
   .recently-wrap { max-height: 700px; overflow-y: auto; border-radius: 12px; }
   .recently-wrap table { box-shadow: none; }
   .since-info { font-size: 13px; color: #6b7280; margin-top: 4px; }
@@ -47,7 +65,7 @@
 
   @media (max-width: 500px) {
     body { padding: 12px; }
-    .stat .value { font-size: 32px; }
+    .stat .value { font-size: 28px; }
     th, td { padding: 8px 10px; font-size: 13px; }
   }
 </style>
@@ -66,20 +84,34 @@
       <div class="value" id="recently">0</div>
       <div class="label">Готово с <span id="sinceDate"></span></div>
     </div>
+    <div class="stat ok">
+      <div class="value" id="okCount">0</div>
+      <div class="label">Актуальных файлов</div>
+    </div>
+    <div class="stat broken">
+      <div class="value" id="broken">0</div>
+      <div class="label">Проблемных</div>
+    </div>
   </div>
 
   <h2>
     Готовые заявки
     <span class="badge-count" id="recentlyCount">0</span>
+    <span class="badge-count red" id="brokenCount" style="display:none">проблемных: 0</span>
   </h2>
-  <div class="since-info">Показаны заявки, готовые начиная с <b id="sinceDate2"></b></div>
+  <div class="since-info">
+    Показаны заявки, готовые начиная с <b id="sinceDate2"></b>.
+    Актуальным считается файл, который есть в папке <b>maps/2026</b> на Яндекс.Диске и загружен
+    не более чем за <b><span id="staleDays"></span></b> дн. до даты заявки.
+  </div>
   <div class="recently-wrap">
     <table>
       <thead><tr>
-        <th style="width:80px;text-align:center">#</th>
-        <th style="width:130px">Готово</th>
+        <th style="width:70px;text-align:center">#</th>
+        <th style="width:110px">Готово</th>
         <th>Название</th>
-        <th style="width:130px;text-align:center">Ссылка</th>
+        <th style="width:160px">Файл в maps/2026</th>
+        <th style="width:220px">Статус</th>
       </tr></thead>
       <tbody id="recentlyBody"></tbody>
     </table>
@@ -87,30 +119,66 @@
 </div>
 
 <script>
-  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ"}], "since_date": "01.11.2026", "updated": "14.11.2026 17:55"};
+  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "file_dt": "11.11.2026 21:10", "status": "actual", "reason": "ok"}], "since_date": "01.11.2026", "stale_days": 7, "updated": "14.11.2026 19:10"};
+
   document.getElementById('updated').textContent       = DATA.updated;
   document.getElementById('total').textContent         = DATA.total;
   document.getElementById('recently').textContent      = DATA.recently_total;
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
   document.getElementById('sinceDate2').textContent    = DATA.since_date;
+  document.getElementById('staleDays').textContent     = DATA.stale_days;
+
+  const problem = DATA.recently_done.filter(r =>
+    r.status === 'stale' || r.status === 'not_in_folder' || r.status === 'link_broken'
+  ).length;
+  const okCount = DATA.recently_done.filter(r => r.status === 'actual').length;
+
+  document.getElementById('broken').textContent = problem;
+  document.getElementById('okCount').textContent = okCount;
+
+  const brokenBadge = document.getElementById('brokenCount');
+  if (problem > 0) {
+    brokenBadge.textContent = 'проблемных: ' + problem;
+    brokenBadge.style.display = 'inline-block';
+  }
+
+  const STATUS_LABEL = {
+    actual:         {cls: 'ok',      text: 'актуален'},
+    stale:          {cls: 'bad',     text: 'устарел'},
+    not_in_folder:  {cls: 'bad',     text: 'нет в папке'},
+    link_broken:    {cls: 'bad',     text: 'ссылка битая'},
+    no_link:        {cls: 'unknown', text: 'нет ссылки'},
+    unknown:        {cls: 'unknown', text: 'не проверен'}
+  };
 
   const rbody = document.getElementById('recentlyBody');
   if (DATA.recently_done.length === 0) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="4" class="empty">Нет готовых заявок с ' + DATA.since_date + '</td>';
+    tr.innerHTML = '<td colspan="5" class="empty">Нет готовых заявок с ' + DATA.since_date + '</td>';
     rbody.appendChild(tr);
   } else {
     DATA.recently_done.forEach(r => {
-      const linkCell = r.link
-        ? '<a class="file-link" href="' + r.link + '" target="_blank" rel="noopener">открыть ↗</a>'
-        : '<span style="color:#9ca3af">—</span>';
+      const st = STATUS_LABEL[r.status] || STATUS_LABEL.unknown;
+      const statusCell =
+        '<span class="status ' + st.cls + '"><span class="dot"></span>' + st.text +
+        (r.reason && r.status !== 'actual' ? ' · ' + r.reason : '') + '</span>';
+
+      let dateCell;
+      if (!r.file_dt) {
+        dateCell = '<td class="upload-date unknown">—</td>';
+      } else {
+        dateCell = '<td class="upload-date ' + (st.cls === 'bad' ? 'bad' : '') + '">' + r.file_dt + '</td>';
+      }
+
       const tr = document.createElement('tr');
+      if (st.cls === 'bad') tr.className = 'row-broken';
       tr.innerHTML =
         '<td class="num">' + r.num + '</td>' +
         '<td>' + r.date + '</td>' +
         '<td>' + r.sam + '</td>' +
-        '<td style="text-align:center">' + linkCell + '</td>';
+        dateCell +
+        '<td>' + statusCell + '</td>';
       rbody.appendChild(tr);
     });
   }
