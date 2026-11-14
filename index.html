@@ -108,7 +108,8 @@
     <span class="badge-count red" id="activeBrokenBadge" style="display:none">проблемных: 0</span>
   </h2>
   <div class="since-info">
-    Проверяется, что файл по ссылке физически лежит в папке <b>maps/2026</b> на Яндекс.Диске.
+    Файл должен быть в папке <b>maps/2026</b> и загружен не более чем за
+    <b><span id="staleDays1"></span></b> дн. до даты заявки.
   </div>
   <div class="scroll-wrap">
     <table>
@@ -116,6 +117,7 @@
         <th style="width:70px;text-align:center">#</th>
         <th>Город</th>
         <th>Название SAM</th>
+        <th style="width:130px">Дата заявки</th>
         <th style="width:160px">Файл в maps/2026</th>
         <th style="width:220px">Статус</th>
       </tr></thead>
@@ -131,7 +133,7 @@
   <div class="since-info">
     Показаны заявки, готовые начиная с <b id="sinceDate2"></b>.
     Актуальным считается файл, который есть в папке <b>maps/2026</b> и загружен
-    не более чем за <b><span id="staleDays"></span></b> дн. до даты заявки.
+    не более чем за <b><span id="staleDays2"></span></b> дн. до даты заявки.
   </div>
   <div class="scroll-wrap">
     <table>
@@ -148,7 +150,7 @@
 </div>
 
 <script>
-  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "file_dt": "11.11.2026 21:10", "status": "actual", "reason": "ok"}], "active_with_link": [{"num": "701", "city": "Волгоград", "sam": "Депутатская 15А", "link": "https://yadi.sk/i/MvCxkZWXwbZg0A", "status": "not_in_folder", "reason": "нет в папке maps/2026", "file_dt": null}, {"num": "680", "city": "Нижний Новгород", "sam": "НН Волжская наб 8к2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%92%D0%BE%D0%BB%D0%B6%D1%81%D0%BA%D0%B0%D1%8F%20%D0%BD%D0%B0%D0%B1%208%D0%BA2.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:07"}, {"num": "679", "city": "Нижний Новгород", "sam": "Мещерский б-р 5", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9C%D0%B5%D1%89%D0%B5%D1%80%D1%81%D0%BA%D0%B8%D0%B9%20%D0%B1-%D1%80%205.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:08"}, {"num": "678", "city": "Нижний Новгород", "sam": "Базарная 8", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%91%D0%B0%D0%B7%D0%B0%D1%80%D0%BD%D0%B0%D1%8F%208.png", "status": "actual", "reason": "ok", "file_dt": "25.10.2026 18:07"}, {"num": "674", "city": "Новокузнецк", "sam": "НКЗ Ростовская 4", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%BE%D0%B2%D0%BE%D0%BA%D1%83%D0%B7%D0%BD%D0%B5%D1%86%D0%BA/%D0%9D%D0%9A%D0%97%20%D0%A0%D0%BE%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA%D0%B0%D1%8F%204.png", "status": "actual", "reason": "ok", "file_dt": "11.11.2026 21:10"}], "since_date": "01.11.2026", "stale_days": 7, "updated": "14.11.2026 20:53"};
+  const DATA = {"total": 50, "recently_total": 1, "recently_done": [{"num": "673", "date": "11.11.2026", "sam": "НКЗ Запорожская 73-А", "link": "https://yadi.sk/i/7T1T759A_16BcQ", "file_dt": "11.11.2026 21:10", "status": "actual", "reason": "ok"}], "active_with_link": [{"num": "701", "app_date": "02.11.2026", "city": "Волгоград", "sam": "Депутатская 15А", "link": "https://yadi.sk/i/MvCxkZWXwbZg0A", "status": "not_in_folder", "reason": "нет в папке maps/2026", "file_dt": null}, {"num": "680", "app_date": "02.11.2026", "city": "Нижний Новгород", "sam": "НН Волжская наб 8к2", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9D%D0%9D%20%D0%92%D0%BE%D0%BB%D0%B6%D1%81%D0%BA%D0%B0%D1%8F%20%D0%BD%D0%B0%D0%B1%208%D0%BA2.png", "status": "stale", "reason": "загружен за 8 дн. до заявки", "file_dt": "25.10.2026 18:07"}, {"num": "679", "app_date": "02.11.2026", "city": "Нижний Новгород", "sam": "Мещерский б-р 5", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%9C%D0%B5%D1%89%D0%B5%D1%80%D1%81%D0%BA%D0%B8%D0%B9%20%D0%B1-%D1%80%205.png", "status": "stale", "reason": "загружен за 8 дн. до заявки", "file_dt": "25.10.2026 18:08"}, {"num": "678", "app_date": "02.11.2026", "city": "Нижний Новгород", "sam": "Базарная 8", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%B8%D0%B6%D0%BD%D0%B8%D0%B9%20%D0%9D%D0%BE%D0%B2%D0%B3%D0%BE%D1%80%D0%BE%D0%B4/%D0%91%D0%B0%D0%B7%D0%B0%D1%80%D0%BD%D0%B0%D1%8F%208.png", "status": "stale", "reason": "загружен за 8 дн. до заявки", "file_dt": "25.10.2026 18:07"}, {"num": "674", "app_date": "29.10.2026", "city": "Новокузнецк", "sam": "НКЗ Ростовская 4", "link": "https://disk.yandex.ru/d/T33K6J6DOVfihQ/2026/%D0%9D%D0%BE%D0%B2%D0%BE%D0%BA%D1%83%D0%B7%D0%BD%D0%B5%D1%86%D0%BA/%D0%9D%D0%9A%D0%97%20%D0%A0%D0%BE%D1%81%D1%82%D0%BE%D0%B2%D1%81%D0%BA%D0%B0%D1%8F%204.png", "status": "actual", "reason": "ok", "file_dt": "11.11.2026 21:10"}], "since_date": "01.11.2026", "stale_days": 7, "updated": "14.11.2026 21:03"};
 
   document.getElementById('updated').textContent       = DATA.updated;
   document.getElementById('total').textContent         = DATA.total;
@@ -156,13 +158,14 @@
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
   document.getElementById('sinceDate2').textContent    = DATA.since_date;
-  document.getElementById('staleDays').textContent     = DATA.stale_days;
+  document.getElementById('staleDays1').textContent    = DATA.stale_days;
+  document.getElementById('staleDays2').textContent    = DATA.stale_days;
   document.getElementById('activeLinkCount').textContent = DATA.active_with_link.length;
 
   // ---- Активные: подсчёт ----
   const activeOkCount = DATA.active_with_link.filter(r => r.status === 'actual').length;
   const activeProblemCount = DATA.active_with_link.filter(r =>
-    r.status === 'not_in_folder' || r.status === 'link_broken'
+    r.status === 'not_in_folder' || r.status === 'link_broken' || r.status === 'stale'
   ).length;
   document.getElementById('activeOk').textContent = activeOkCount;
   document.getElementById('activeProblems').textContent = activeProblemCount;
@@ -186,7 +189,7 @@
   }
 
   const STATUS_LABEL = {
-    actual:        {cls: 'ok',      text: 'в папке'},
+    actual:        {cls: 'ok',      text: 'актуален'},
     stale:         {cls: 'bad',     text: 'устарел'},
     not_in_folder: {cls: 'bad',     text: 'нет в папке'},
     link_broken:   {cls: 'bad',     text: 'ссылка битая'},
@@ -211,16 +214,22 @@
   const activeBody = document.getElementById('activeBody');
   if (DATA.active_with_link.length === 0) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="5" class="empty">Нет активных заявок со ссылкой в «Карта»</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">Нет активных заявок со ссылкой в «Карта»</td>';
     activeBody.appendChild(tr);
   } else {
     DATA.active_with_link.forEach(r => {
       const tr = document.createElement('tr');
-      if (r.status === 'not_in_folder' || r.status === 'link_broken') tr.className = 'row-broken';
+      if (r.status === 'not_in_folder' || r.status === 'link_broken' || r.status === 'stale') {
+        tr.className = 'row-broken';
+      }
+      const appDateCell = r.app_date
+        ? '<td style="white-space:nowrap">' + r.app_date + '</td>'
+        : '<td style="color:#9ca3af">—</td>';
       tr.innerHTML =
         '<td class="num">' + r.num + '</td>' +
         '<td>' + r.city + '</td>' +
         '<td>' + r.sam + '</td>' +
+        appDateCell +
         renderDate(r) +
         '<td>' + renderStatus(r) + '</td>';
       activeBody.appendChild(tr);
