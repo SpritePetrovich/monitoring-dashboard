@@ -270,7 +270,6 @@ def get_public_name(link, timeout=PUBLIC_API_TIMEOUT):
 
 
 def resolve_name(link):
-    """Имя файла: из URL или через публичный API."""
     if not link:
         return None
     name = extract_filename_from_url(link)
@@ -280,7 +279,6 @@ def resolve_name(link):
 
 
 def find_in_cache(name, folder_cache):
-    """Возвращает (file_dt_str, relpath) или (None, None)."""
     if name not in folder_cache:
         return None, None
     entries = folder_cache[name]
@@ -297,10 +295,25 @@ def find_in_cache(name, folder_cache):
 
 
 # =========================================================
+# ============ ПАРСИНГ ДАТ ================================
+# =========================================================
+def parse_date_any(s):
+    """Парсит дату в форматах DD.MM.YYYY, DD.MM.YYYY HH:MM, DD.MM.YYYY HH:MM:SS."""
+    if not s:
+        return None
+    s = s.strip()
+    for fmt in ("%d.%m.%Y", "%d.%m.%Y %H:%M", "%d.%m.%Y %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# =========================================================
 # ============ ПРОВЕРКА ГОТОВОЙ ЗАЯВКИ ====================
 # =========================================================
 def evaluate_recent(link, date_done_str, folder_cache):
-    """Проверяет готовую заявку: файл в папке + дата относительно даты заявки."""
     if not link:
         return {"status": "no_link", "reason": "нет ссылки", "file_dt": None, "name": None}
 
@@ -309,11 +322,11 @@ def evaluate_recent(link, date_done_str, folder_cache):
         return {"status": "link_broken", "reason": "не удалось определить имя файла",
                 "file_dt": None, "name": None}
 
-    file_dt_str, _ = find_in_cache(name, folder_cache)
     if name not in folder_cache:
         return {"status": "not_in_folder", "reason": "нет в папке maps/2026",
                 "file_dt": None, "name": name}
 
+    file_dt_str, _ = find_in_cache(name, folder_cache)
     if not file_dt_str:
         return {"status": "unknown", "reason": "нет даты у файла",
                 "file_dt": None, "name": name}
@@ -324,13 +337,7 @@ def evaluate_recent(link, date_done_str, folder_cache):
         return {"status": "unknown", "reason": "дата не парсится",
                 "file_dt": file_dt_str, "name": name}
 
-    date_done = None
-    if date_done_str:
-        try:
-            date_done = datetime.strptime(date_done_str.strip(), "%d.%m.%Y")
-        except ValueError:
-            pass
-
+    date_done = parse_date_any(date_done_str)
     if date_done is None:
         return {"status": "unknown", "reason": "нет даты заявки",
                 "file_dt": file_dt_str, "name": name}
@@ -352,8 +359,12 @@ def evaluate_recent(link, date_done_str, folder_cache):
 # =========================================================
 # ============ ПРОВЕРКА АКТИВНОЙ ЗАЯВКИ ===================
 # =========================================================
-def evaluate_active(link, folder_cache):
-    """Проверяет активную заявку: есть ли её файл в папке (без сравнения с датой)."""
+def evaluate_active(link, app_date_str, folder_cache):
+    """
+    Проверяет активную заявку:
+    1) файл есть в папке maps/2026?
+    2) дата файла не старше даты заявки более чем на STALE_THRESHOLD_DAYS?
+    """
     if not link:
         return {"status": "no_link", "reason": "нет ссылки", "file_dt": None, "name": None}
 
@@ -367,6 +378,33 @@ def evaluate_active(link, folder_cache):
                 "file_dt": None, "name": name}
 
     file_dt_str, _ = find_in_cache(name, folder_cache)
+    if not file_dt_str:
+        return {"status": "unknown", "reason": "нет даты у файла",
+                "file_dt": None, "name": name}
+
+    try:
+        file_dt = datetime.strptime(file_dt_str, "%d.%m.%Y %H:%M")
+    except ValueError:
+        return {"status": "unknown", "reason": "дата не парсится",
+                "file_dt": file_dt_str, "name": name}
+
+    # Сравнение с датой заявки
+    app_date = parse_date_any(app_date_str)
+    if app_date is None:
+        # Не удалось распарсить дату заявки — только проверка наличия
+        return {"status": "actual", "reason": "ok (без сравнения дат)",
+                "file_dt": file_dt_str, "name": name}
+
+    delta_days = (file_dt.date() - app_date.date()).days
+
+    if delta_days < -STALE_THRESHOLD_DAYS:
+        return {
+            "status": "stale",
+            "reason": f"загружен за {abs(delta_days)} дн. до заявки",
+            "file_dt": file_dt_str,
+            "name": name,
+        }
+
     return {"status": "actual", "reason": "ok",
             "file_dt": file_dt_str, "name": name}
 
@@ -398,7 +436,7 @@ def evaluate_all_recent(recently_filtered, folder_cache):
 
 def evaluate_all_active(active_data, folder_cache):
     """Проверяет активные заявки, у которых в 'Карта' есть ссылка."""
-    to_check = [row for row in active_data if row[5]]
+    to_check = [row for row in active_data if row[5]]  # link на индексе 5
     results = {}
 
     if not to_check:
@@ -408,15 +446,18 @@ def evaluate_all_active(active_data, folder_cache):
     print(f"\n=== Проверка {len(to_check)} активных заявок со ссылкой ===")
 
     def eval_one(row):
-        num, city, sam, status, reason, link = row
-        return num, evaluate_active(link, folder_cache)
+        num, city, sam, status, reason, link, app_date = row
+        return num, evaluate_active(link, app_date, folder_cache)
 
     with ThreadPoolExecutor(max_workers=PUBLIC_API_WORKERS) as ex:
         futures = {ex.submit(eval_one, row): row for row in to_check}
         for i, f in enumerate(as_completed(futures), 1):
             num, res = f.result()
             results[num] = res
-            icon = {"actual": "✅", "not_in_folder": "❌", "link_broken": "❌"}.get(res["status"], "?")
+            icon = {
+                "actual": "✅", "stale": "❌",
+                "not_in_folder": "❌", "link_broken": "❌",
+            }.get(res["status"], "?")
             print(f"   [{i}/{len(futures)}] {icon} {num:<5} {res['status']:<14} "
                   f"{(res['file_dt'] or ''):<18} {res['reason']}")
     return results
@@ -480,7 +521,10 @@ def login(session):
 # ==================== ПАРСИНГ ============================
 # =========================================================
 def _parse_active_table(table, headers):
-    """Активные: (num, city, sam, status, reason, link)."""
+    """
+    Активные: (num, city, sam, status, reason, link, app_date_str).
+    app_date берём из столбца «Дата заявки КА».
+    """
     def idx(*names):
         for n in names:
             if n in headers:
@@ -488,6 +532,7 @@ def _parse_active_table(table, headers):
         return None
 
     i_num    = idx("#")
+    i_date   = idx("Дата заявки КА")
     i_city   = idx("Город")
     i_sam    = idx("Название SAM")
     i_status = idx("Карта")
@@ -502,19 +547,23 @@ def _parse_active_table(table, headers):
     if not tbody:
         return []
 
-    max_idx = max(x for x in [i_num, i_city, i_sam,
-                              i_status if i_status is not None else 0,
-                              i_reason if i_reason is not None else 0])
+    max_idx = max(
+        i_num, i_city, i_sam,
+        i_status if i_status is not None else 0,
+        i_reason if i_reason is not None else 0,
+        i_date   if i_date   is not None else 0,
+    )
 
     rows = []
     for row in tbody.find_all("tr"):
         cols = row.find_all("td")
         if len(cols) <= max_idx:
             continue
-        num    = cols[i_num].get_text(strip=True)
-        city   = cols[i_city].get_text(strip=True)
-        sam    = cols[i_sam].get_text(strip=True)
-        reason = cols[i_reason].get_text(strip=True) if i_reason is not None else ""
+        num      = cols[i_num].get_text(strip=True)
+        app_date = cols[i_date].get_text(strip=True) if i_date is not None else ""
+        city     = cols[i_city].get_text(strip=True)
+        sam      = cols[i_sam].get_text(strip=True)
+        reason   = cols[i_reason].get_text(strip=True) if i_reason is not None else ""
 
         link = ""
         has_on_disk = False
@@ -534,7 +583,7 @@ def _parse_active_table(table, headers):
             status = "pending"
 
         if num and city and sam:
-            rows.append((num, city, sam, status, reason, link))
+            rows.append((num, city, sam, status, reason, link, app_date))
     return rows
 
 
@@ -656,10 +705,10 @@ def filter_recently_by_date(rows, since: datetime):
 def save_active_csv(data, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;city;sam;status;reason;link\n")
-        for num, city, sam, status, reason, link in data:
+        f.write("num;city;sam;status;reason;link;app_date\n")
+        for num, city, sam, status, reason, link, app_date in data:
             link_esc = (link or "").replace(";", "%3B")
-            f.write(f"{num};{city};{sam};{status};{reason};{link_esc}\n")
+            f.write(f"{num};{city};{sam};{status};{reason};{link_esc};{app_date}\n")
     print(f"💾 CSV (активные): {path}")
 
 
@@ -791,7 +840,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <span class="badge-count red" id="activeBrokenBadge" style="display:none">проблемных: 0</span>
   </h2>
   <div class="since-info">
-    Проверяется, что файл по ссылке физически лежит в папке <b>maps/2026</b> на Яндекс.Диске.
+    Файл должен быть в папке <b>maps/2026</b> и загружен не более чем за
+    <b><span id="staleDays1"></span></b> дн. до даты заявки.
   </div>
   <div class="scroll-wrap">
     <table>
@@ -799,6 +849,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <th style="width:70px;text-align:center">#</th>
         <th>Город</th>
         <th>Название SAM</th>
+        <th style="width:130px">Дата заявки</th>
         <th style="width:160px">Файл в maps/2026</th>
         <th style="width:220px">Статус</th>
       </tr></thead>
@@ -814,7 +865,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="since-info">
     Показаны заявки, готовые начиная с <b id="sinceDate2"></b>.
     Актуальным считается файл, который есть в папке <b>maps/2026</b> и загружен
-    не более чем за <b><span id="staleDays"></span></b> дн. до даты заявки.
+    не более чем за <b><span id="staleDays2"></span></b> дн. до даты заявки.
   </div>
   <div class="scroll-wrap">
     <table>
@@ -839,13 +890,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   document.getElementById('recentlyCount').textContent = DATA.recently_total;
   document.getElementById('sinceDate').textContent     = DATA.since_date;
   document.getElementById('sinceDate2').textContent    = DATA.since_date;
-  document.getElementById('staleDays').textContent     = DATA.stale_days;
+  document.getElementById('staleDays1').textContent    = DATA.stale_days;
+  document.getElementById('staleDays2').textContent    = DATA.stale_days;
   document.getElementById('activeLinkCount').textContent = DATA.active_with_link.length;
 
   // ---- Активные: подсчёт ----
   const activeOkCount = DATA.active_with_link.filter(r => r.status === 'actual').length;
   const activeProblemCount = DATA.active_with_link.filter(r =>
-    r.status === 'not_in_folder' || r.status === 'link_broken'
+    r.status === 'not_in_folder' || r.status === 'link_broken' || r.status === 'stale'
   ).length;
   document.getElementById('activeOk').textContent = activeOkCount;
   document.getElementById('activeProblems').textContent = activeProblemCount;
@@ -869,7 +921,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }
 
   const STATUS_LABEL = {
-    actual:        {cls: 'ok',      text: 'в папке'},
+    actual:        {cls: 'ok',      text: 'актуален'},
     stale:         {cls: 'bad',     text: 'устарел'},
     not_in_folder: {cls: 'bad',     text: 'нет в папке'},
     link_broken:   {cls: 'bad',     text: 'ссылка битая'},
@@ -894,16 +946,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   const activeBody = document.getElementById('activeBody');
   if (DATA.active_with_link.length === 0) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="5" class="empty">Нет активных заявок со ссылкой в «Карта»</td>';
+    tr.innerHTML = '<td colspan="6" class="empty">Нет активных заявок со ссылкой в «Карта»</td>';
     activeBody.appendChild(tr);
   } else {
     DATA.active_with_link.forEach(r => {
       const tr = document.createElement('tr');
-      if (r.status === 'not_in_folder' || r.status === 'link_broken') tr.className = 'row-broken';
+      if (r.status === 'not_in_folder' || r.status === 'link_broken' || r.status === 'stale') {
+        tr.className = 'row-broken';
+      }
+      const appDateCell = r.app_date
+        ? '<td style="white-space:nowrap">' + r.app_date + '</td>'
+        : '<td style="color:#9ca3af">—</td>';
       tr.innerHTML =
         '<td class="num">' + r.num + '</td>' +
         '<td>' + r.city + '</td>' +
         '<td>' + r.sam + '</td>' +
+        appDateCell +
         renderDate(r) +
         '<td>' + renderStatus(r) + '</td>';
       activeBody.appendChild(tr);
@@ -940,12 +998,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 def generate_html(active_data, active_eval, recently_rows, recent_eval, since_dt, path):
     # Активные со ссылкой
     active_with_link = []
-    for num, city, sam, status, reason, link in active_data:
+    for num, city, sam, status, reason, link, app_date in active_data:
         if status != "has_link":
             continue
         ev = active_eval.get(num, {})
         active_with_link.append({
             "num": num,
+            "app_date": app_date,
             "city": city,
             "sam": sam,
             "link": link,
@@ -955,7 +1014,6 @@ def generate_html(active_data, active_eval, recently_rows, recent_eval, since_dt
         })
     active_with_link.sort(key=lambda r: r["num"], reverse=True)
 
-    # Готовые
     recently_payload = []
     for num, date, sam, link, _ in recently_rows:
         ev = recent_eval.get(num, {})
@@ -1042,7 +1100,8 @@ if __name__ == "__main__":
     print(f"   ├─ «На Диске» (без ссылки): {active_done_n}")
     print(f"   └─ без ссылки (ожидают): {len(active_data) - active_with_link_n - active_done_n}")
     if active_with_link_n:
-        print(f"      🟢 файл в папке: {count_active('actual')}")
+        print(f"      🟢 актуальных: {count_active('actual')}")
+        print(f"      ❌ устарело (stale): {count_active('stale')}")
         print(f"      ❌ нет в папке: {count_active('not_in_folder')}")
         print(f"      ❌ ссылка битая: {count_active('link_broken')}")
     print()
