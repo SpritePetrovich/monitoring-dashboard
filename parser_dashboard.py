@@ -53,10 +53,12 @@ RECENTLY_SINCE = _parse_since(
 )
 
 # ---------- ЯНДЕКС.ДИСК ----------
-YANDEX_TOKEN         = os.getenv("YANDEX_TOKEN", "")
-YANDEX_REMOTE_FOLDER = os.getenv("YANDEX_REMOTE_FOLDER", "disk:/__smart_place__/maps/2026")
-YANDEX_API           = "https://cloud-api.yandex.net/v1/disk/resources"
-YANDEX_PUBLIC_API    = "https://cloud-api.yandex.net/v1/disk/public/resources"
+YANDEX_TOKEN             = os.getenv("YANDEX_TOKEN", "")
+YANDEX_REMOTE_FOLDER     = os.getenv("YANDEX_REMOTE_FOLDER", "disk:/__smart_place__/maps/2026")
+YANDEX_MONITORING_FOLDER = os.getenv("YANDEX_MONITORING_FOLDER", "disk:/__smart_place__/monitoring")
+YANDEX_API               = "https://cloud-api.yandex.net/v1/disk/resources"
+YANDEX_UPLOAD_API        = "https://cloud-api.yandex.net/v1/disk/resources/upload"
+YANDEX_PUBLIC_API        = "https://cloud-api.yandex.net/v1/disk/public/resources"
 
 STALE_THRESHOLD_DAYS = int(os.getenv("STALE_THRESHOLD_DAYS", "7"))
 PUBLIC_API_WORKERS   = int(os.getenv("PUBLIC_API_WORKERS", "6"))
@@ -158,14 +160,106 @@ def github_upload_dashboard(local_html_path):
 
 
 # =========================================================
-# ================== КЕШ ПАПКИ НА ДИСКЕ ===================
+# ================== ЯНДЕКС.ДИСК (CSV) ====================
 # =========================================================
+def ya_log(msg):
+    print(f"[YA {datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+
 def _ya_headers():
     if not YANDEX_TOKEN:
         raise RuntimeError("YANDEX_TOKEN не задан (проверь секреты на GitHub)")
     return {"Authorization": f"OAuth {YANDEX_TOKEN}"}
 
 
+def ya_ensure_folder(path):
+    """Создаёт папку на Диске, если её нет. 409 = уже существует."""
+    try:
+        r = requests.put(YANDEX_API, headers=_ya_headers(),
+                         params={"path": path}, timeout=20)
+    except Exception as e:
+        ya_log(f"❌ Сеть при создании папки {path}: {e}")
+        return False
+
+    if r.status_code in (200, 201):
+        ya_log(f"📁 Папка создана: {path}")
+        return True
+    if r.status_code == 409:
+        ya_log(f"📁 Папка уже существует: {path}")
+        return True
+
+    ya_log(f"❌ Не удалось создать папку {path}: {r.status_code} {r.text[:200]}")
+    return False
+
+
+def ya_upload_file(local_path, remote_path):
+    """Загружает локальный файл на Диск (перезаписывая существующий). Без публикации."""
+    if not os.path.exists(local_path):
+        ya_log(f"❌ Нет локального файла: {local_path}")
+        return False
+
+    try:
+        r = requests.get(
+            YANDEX_UPLOAD_API,
+            headers=_ya_headers(),
+            params={"path": remote_path, "overwrite": "true"},
+            timeout=20,
+        )
+    except Exception as e:
+        ya_log(f"❌ Сеть (upload-url) {remote_path}: {e}")
+        return False
+
+    if r.status_code != 200:
+        ya_log(f"❌ upload-url {remote_path}: {r.status_code} {r.text[:200]}")
+        return False
+
+    href = r.json().get("href")
+    if not href:
+        ya_log(f"❌ Пустой href для {remote_path}")
+        return False
+
+    try:
+        with open(local_path, "rb") as f:
+            put = requests.put(
+                href, data=f,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=120,
+            )
+    except Exception as e:
+        ya_log(f"❌ Сеть при загрузке {local_path}: {e}")
+        return False
+
+    if put.status_code in (200, 201):
+        size_kb = os.path.getsize(local_path) / 1024
+        ya_log(f"☁️  Загружен: {os.path.basename(local_path)} ({size_kb:.1f} КБ) → {remote_path}")
+        return True
+
+    ya_log(f"❌ Ошибка загрузки {local_path}: {put.status_code} {put.text[:200]}")
+    return False
+
+
+def ya_upload_csvs():
+    """Создаёт папку monitoring (если нужно) и заливает оба CSV. Без публикации."""
+    print("\n=== Выгрузка CSV на Яндекс.Диск ===")
+
+    if not YANDEX_TOKEN:
+        ya_log("❌ YANDEX_TOKEN не задан. Пропускаем.")
+        return
+
+    if not ya_ensure_folder(YANDEX_MONITORING_FOLDER):
+        return
+
+    for local_path, remote_name in [
+        (OUTPUT_CSV,   "output.csv"),
+        (RECENTLY_CSV, "recently_done.csv"),
+    ]:
+        remote_path = f"{YANDEX_MONITORING_FOLDER}/{remote_name}"
+        ya_upload_file(local_path, remote_path)
+
+
+# =========================================================
+# ================== КЕШ ПАПКИ НА ДИСКЕ ===================
+# =========================================================
 def load_folder_cache():
     cache = {}
     api_calls = {"n": 0}
@@ -298,7 +392,7 @@ def find_in_cache(name, folder_cache):
 # ============ ПАРСИНГ ДАТ ================================
 # =========================================================
 def parse_date_any(s):
-    """Парсит дату в форматах DD.MM.YYYY, DD.MM.YYYY HH:MM, DD.MM.YYYY HH:MM:SS."""
+    """Парсит DD.MM.YYYY, DD.MM.YYYY HH:MM, DD.MM.YYYY HH:MM:SS."""
     if not s:
         return None
     s = s.strip()
@@ -360,11 +454,6 @@ def evaluate_recent(link, date_done_str, folder_cache):
 # ============ ПРОВЕРКА АКТИВНОЙ ЗАЯВКИ ===================
 # =========================================================
 def evaluate_active(link, app_date_str, folder_cache):
-    """
-    Проверяет активную заявку:
-    1) файл есть в папке maps/2026?
-    2) дата файла не старше даты заявки более чем на STALE_THRESHOLD_DAYS?
-    """
     if not link:
         return {"status": "no_link", "reason": "нет ссылки", "file_dt": None, "name": None}
 
@@ -388,10 +477,8 @@ def evaluate_active(link, app_date_str, folder_cache):
         return {"status": "unknown", "reason": "дата не парсится",
                 "file_dt": file_dt_str, "name": name}
 
-    # Сравнение с датой заявки
     app_date = parse_date_any(app_date_str)
     if app_date is None:
-        # Не удалось распарсить дату заявки — только проверка наличия
         return {"status": "actual", "reason": "ok (без сравнения дат)",
                 "file_dt": file_dt_str, "name": name}
 
@@ -435,8 +522,7 @@ def evaluate_all_recent(recently_filtered, folder_cache):
 
 
 def evaluate_all_active(active_data, folder_cache):
-    """Проверяет активные заявки, у которых в 'Карта' есть ссылка."""
-    to_check = [row for row in active_data if row[5]]  # link на индексе 5
+    to_check = [row for row in active_data if row[5]]
     results = {}
 
     if not to_check:
@@ -521,10 +607,6 @@ def login(session):
 # ==================== ПАРСИНГ ============================
 # =========================================================
 def _parse_active_table(table, headers):
-    """
-    Активные: (num, city, sam, status, reason, link, app_date_str).
-    app_date берём из столбца «Дата заявки КА».
-    """
     def idx(*names):
         for n in names:
             if n in headers:
@@ -773,10 +855,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   td.upload-date.bad { color: #dc2626; font-weight: 600; }
   td.upload-date.unknown { color: #9ca3af; }
 
-  a.file-link { color: #2563eb; text-decoration: none; font-weight: 500; }
-  a.file-link:hover { text-decoration: underline; }
-  a.file-link.broken { color: #dc2626; text-decoration: line-through; }
-
   .status { display: inline-flex; align-items: center; gap: 6px;
             font-size: 12px; font-weight: 600; }
   .status .dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -894,7 +972,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   document.getElementById('staleDays2').textContent    = DATA.stale_days;
   document.getElementById('activeLinkCount').textContent = DATA.active_with_link.length;
 
-  // ---- Активные: подсчёт ----
   const activeOkCount = DATA.active_with_link.filter(r => r.status === 'actual').length;
   const activeProblemCount = DATA.active_with_link.filter(r =>
     r.status === 'not_in_folder' || r.status === 'link_broken' || r.status === 'stale'
@@ -907,7 +984,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     b.style.display = 'inline-block';
   }
 
-  // ---- Готовые: подсчёт ----
   const recentOkCount = DATA.recently_done.filter(r => r.status === 'actual').length;
   const recentProblemCount = DATA.recently_done.filter(r =>
     r.status === 'stale' || r.status === 'not_in_folder' || r.status === 'link_broken'
@@ -942,7 +1018,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     return '<td class="upload-date ' + cls + '">' + r.file_dt + '</td>';
   }
 
-  // ---- Таблица активных ----
   const activeBody = document.getElementById('activeBody');
   if (DATA.active_with_link.length === 0) {
     const tr = document.createElement('tr');
@@ -968,7 +1043,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     });
   }
 
-  // ---- Таблица готовых ----
   const recentBody = document.getElementById('recentBody');
   if (DATA.recently_done.length === 0) {
     const tr = document.createElement('tr');
@@ -996,7 +1070,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 def generate_html(active_data, active_eval, recently_rows, recent_eval, since_dt, path):
-    # Активные со ссылкой
     active_with_link = []
     for num, city, sam, status, reason, link, app_date in active_data:
         if status != "has_link":
@@ -1070,24 +1143,31 @@ if __name__ == "__main__":
     print(f"   всего: {len(recently_raw)}, попало: {len(recently_filtered)}, отброшено: {dropped}")
     recently_filtered.sort(key=lambda r: r[4], reverse=True)
 
-    # 4) Проверка активных со ссылкой
+    # 4) Проверки
     active_eval = evaluate_all_active(active_data, folder_cache)
-
-    # 5) Проверка готовых
     recent_eval = evaluate_all_recent(recently_filtered, folder_cache)
 
-    # 6) Сохранение + рендер
+    # 5) Сохраняем CSV локально
     save_active_csv(active_data, OUTPUT_CSV)
     save_recently_csv(recently_filtered, recent_eval, RECENTLY_CSV)
-    generate_html(active_data, active_eval, recently_filtered, recent_eval, RECENTLY_SINCE, OUTPUT_HTML)
 
-    # 7) Выгрузка на GitHub
+    # 6) Выгружаем CSV на Яндекс.Диск (без публикации)
+    try:
+        ya_upload_csvs()
+    except Exception as e:
+        ya_log(f"❌ Синхронизация CSV упала: {e}")
+
+    # 7) Рендер HTML
+    generate_html(active_data, active_eval, recently_filtered, recent_eval,
+                  RECENTLY_SINCE, OUTPUT_HTML)
+
+    # 8) Выгрузка на GitHub
     try:
         github_upload_dashboard(OUTPUT_HTML)
     except Exception as e:
         gh_log(f"❌ Синхронизация с GitHub упала: {e}")
 
-    # 8) Итоги
+    # 9) Итоги
     def count_recent(st): return sum(1 for r in recent_eval.values() if r["status"] == st)
     def count_active(st): return sum(1 for r in active_eval.values() if r["status"] == st)
     active_with_link_n = sum(1 for r in active_data if r[3] == "has_link")
