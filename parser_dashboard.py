@@ -71,6 +71,10 @@ GITHUB_REPO      = os.getenv("GITHUB_REPO", "monitoring-dashboard")
 GITHUB_FILE_PATH = "index.html"
 GITHUB_BRANCH    = os.getenv("GITHUB_BRANCH", "main")
 
+# ---------- CSV: разделитель и кодировка ----------
+CSV_SEP      = "; "   # разделитель — точка с запятой + пробел
+CSV_ENCODING = "utf-8"
+
 
 # =========================================================
 # ================== GITHUB PAGES =========================
@@ -173,7 +177,6 @@ def _ya_headers():
 
 
 def ya_ensure_folder(path):
-    """Создаёт папку на Диске, если её нет. 409 = уже существует."""
     try:
         r = requests.put(YANDEX_API, headers=_ya_headers(),
                          params={"path": path}, timeout=20)
@@ -193,7 +196,6 @@ def ya_ensure_folder(path):
 
 
 def ya_upload_file(local_path, remote_path):
-    """Загружает локальный файл на Диск (перезаписывая существующий). Без публикации."""
     if not os.path.exists(local_path):
         ya_log(f"❌ Нет локального файла: {local_path}")
         return False
@@ -239,7 +241,6 @@ def ya_upload_file(local_path, remote_path):
 
 
 def ya_upload_csvs():
-    """Создаёт папку monitoring (если нужно) и заливает оба CSV. Без публикации."""
     print("\n=== Выгрузка CSV на Яндекс.Диск ===")
 
     if not YANDEX_TOKEN:
@@ -392,7 +393,6 @@ def find_in_cache(name, folder_cache):
 # ============ ПАРСИНГ ДАТ ================================
 # =========================================================
 def parse_date_any(s):
-    """Парсит DD.MM.YYYY, DD.MM.YYYY HH:MM, DD.MM.YYYY HH:MM:SS."""
     if not s:
         return None
     s = s.strip()
@@ -784,28 +784,50 @@ def filter_recently_by_date(rows, since: datetime):
 # =========================================================
 # ==================== CSV ================================
 # =========================================================
+def _escape_csv(value: str) -> str:
+    """
+    Экранирует значение для CSV с разделителем '; '.
+    Если в значении встречается `;`, кавычка или перевод строки — оборачиваем в кавычки.
+    """
+    if value is None:
+        return ""
+    s = str(value)
+    if any(ch in s for ch in ('"', '\n', '\r', ';')):
+        s = s.replace('"', '""')
+        return f'"{s}"'
+    return s
+
+
+def _csv_line(fields) -> str:
+    """Собирает строку: значения, экранированные, соединённые через '; '."""
+    return CSV_SEP.join(_escape_csv(f) for f in fields)
+
+
 def save_active_csv(data, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;city;sam;status;reason;link;app_date\n")
+    with open(path, "w", encoding=CSV_ENCODING, newline="") as f:
+        f.write(_csv_line(["num", "city", "sam", "status", "reason", "link", "app_date"]) + "\n")
         for num, city, sam, status, reason, link, app_date in data:
-            link_esc = (link or "").replace(";", "%3B")
-            f.write(f"{num};{city};{sam};{status};{reason};{link_esc};{app_date}\n")
+            f.write(_csv_line([num, city, sam, status, reason, link or "", app_date]) + "\n")
     print(f"💾 CSV (активные): {path}")
 
 
 def save_recently_csv(rows, eval_results, path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8-sig") as f:
-        f.write("num;date_done;sam;link;file_in_folder_date;status;reason\n")
+    with open(path, "w", encoding=CSV_ENCODING, newline="") as f:
+        f.write(_csv_line(["num", "date_done", "sam", "link",
+                           "file_in_folder_date", "status", "reason"]) + "\n")
         for num, date, sam, link, _ in rows:
             ev = eval_results.get(num, {})
-            link_esc = (link or "").replace(";", "%3B")
-            reason_esc = (ev.get("reason") or "").replace(";", ",")
-            f.write(
-                f"{num};{date};{sam};{link_esc};"
-                f"{ev.get('file_dt') or ''};{ev.get('status') or ''};{reason_esc}\n"
-            )
+            f.write(_csv_line([
+                num,
+                date,
+                sam,
+                link or "",
+                ev.get("file_dt") or "",
+                ev.get("status") or "",
+                ev.get("reason") or "",
+            ]) + "\n")
     print(f"💾 CSV (недавно готово): {path}")
 
 
@@ -1124,50 +1146,41 @@ if __name__ == "__main__":
     session = requests.Session()
     session.headers.update({"User-Agent": UA_STRING})
 
-    # 1) Кеш файлов из папки maps/2026
     if not YANDEX_TOKEN:
         print("\n❌ YANDEX_TOKEN не задан. Проверь secrets на GitHub.")
         raise SystemExit(1)
     print(f"\n=== Загрузка кеша папки {YANDEX_REMOTE_FOLDER} ===")
     folder_cache = load_folder_cache()
 
-    # 2) Парсим сайт
     active_data, recently_raw = fetch_and_parse(session, TARGET_URL)
     if not active_data and not recently_raw:
         print("\n❌ Не удалось получить данные с сайта.")
         raise SystemExit(1)
 
-    # 3) Фильтр «Недавно готово» по дате
     print(f"\n=== Фильтр «Недавно готово» (с {RECENTLY_SINCE.strftime('%d.%m.%Y')}) ===")
     recently_filtered, dropped = filter_recently_by_date(recently_raw, RECENTLY_SINCE)
     print(f"   всего: {len(recently_raw)}, попало: {len(recently_filtered)}, отброшено: {dropped}")
     recently_filtered.sort(key=lambda r: r[4], reverse=True)
 
-    # 4) Проверки
     active_eval = evaluate_all_active(active_data, folder_cache)
     recent_eval = evaluate_all_recent(recently_filtered, folder_cache)
 
-    # 5) Сохраняем CSV локально
     save_active_csv(active_data, OUTPUT_CSV)
     save_recently_csv(recently_filtered, recent_eval, RECENTLY_CSV)
 
-    # 6) Выгружаем CSV на Яндекс.Диск (без публикации)
     try:
         ya_upload_csvs()
     except Exception as e:
         ya_log(f"❌ Синхронизация CSV упала: {e}")
 
-    # 7) Рендер HTML
     generate_html(active_data, active_eval, recently_filtered, recent_eval,
                   RECENTLY_SINCE, OUTPUT_HTML)
 
-    # 8) Выгрузка на GitHub
     try:
         github_upload_dashboard(OUTPUT_HTML)
     except Exception as e:
         gh_log(f"❌ Синхронизация с GitHub упала: {e}")
 
-    # 9) Итоги
     def count_recent(st): return sum(1 for r in recent_eval.values() if r["status"] == st)
     def count_active(st): return sum(1 for r in active_eval.values() if r["status"] == st)
     active_with_link_n = sum(1 for r in active_data if r[3] == "has_link")
